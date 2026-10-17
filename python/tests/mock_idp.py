@@ -1,5 +1,9 @@
 """A small OpenID Connect identity provider for the browser sign-in tests: discovery, a JWKS,
-and a token endpoint that trades one authorization code for a signed ID token."""
+and a token endpoint that trades one authorization code for a signed ID token.
+
+The tests run it as its own process (``python mock_idp.py AUDIENCE CLIENT_ID CLIENT_SECRET``,
+which prints its issuer URL): during a browser sign-in the test process is inside the driver
+library, holding the GIL, while the server exchanges the code with this provider."""
 
 from __future__ import annotations
 
@@ -30,7 +34,7 @@ class MockIdP:
         self.client_secret = client_secret
         self.kid = "hardcharger-adbc-test-key"
         self.key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-        self.valid_code = "valid-code"
+        self.valid_code = "code-ok"
         self.email = "analyst@gizmodata.com"
         idp = self
 
@@ -123,3 +127,11 @@ class MockIdP:
     def stop(self) -> None:
         self.server.shutdown()
         self.server.server_close()
+
+
+if __name__ == "__main__":
+    import sys
+
+    provider = MockIdP(audience=sys.argv[1], client_id=sys.argv[2], client_secret=sys.argv[3])
+    print(provider.issuer, flush=True)
+    provider.thread.join()

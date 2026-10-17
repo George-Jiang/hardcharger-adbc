@@ -10,3 +10,8 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+go/build/
+python/src/adbc_driver_hardcharger/libadbc_driver_hardcharger.*
+*.so
+*.dylib
+*.dll

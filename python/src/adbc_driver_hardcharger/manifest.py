@@ -1,13 +1,12 @@
 """The ADBC driver manifest ``hardcharger.toml``: ``driver = "hardcharger"`` in any ADBC driver
-manager (C/C++, Go, R, Rust, Python), loading the Warp SQL driver library that the
-``adbc-driver-warpsql`` wheel installed.
+manager (C/C++, Go, R, Rust, Python), loading the driver library this wheel installed.
 
     python -m adbc_driver_hardcharger.manifest            # install for this user
     python -m adbc_driver_hardcharger.manifest --print    # print it
     python -m adbc_driver_hardcharger.manifest --dir DIR  # install into DIR
 
-The manifest names the native library, so it carries no Python: URIs given to it are the Warp
-SQL driver's own, ``warp://host:31337`` (``?tls=false`` for plain HTTP), not ``hardcharger://``.
+The library reads ``hardcharger://`` URIs and the ``adbc.hardcharger.*`` options itself, so they
+work through the manifest exactly as from Python.
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ from typing import Optional
 from ._version import __version__
 
 MANIFEST_NAME = "hardcharger.toml"
-ENTRYPOINT = "AdbcDriverWarpsqlInit"
+ENTRYPOINT = "AdbcDriverHardchargerInit"
 
 
 def _platform_key() -> str:
@@ -30,16 +29,16 @@ def _platform_key() -> str:
     machine = platform.machine().lower()
     arch = {"x86_64": "amd64", "amd64": "amd64", "arm64": "arm64", "aarch64": "arm64"}.get(machine)
     if arch is None:
-        raise RuntimeError(f"no Warp SQL driver library is built for {machine}")
+        raise RuntimeError(f"no Hardcharger driver library is built for {machine}")
     system = {"linux": "linux", "darwin": "macos", "win32": "windows"}.get(sys.platform)
     if system is None:
-        raise RuntimeError(f"no Warp SQL driver library is built for {sys.platform}")
+        raise RuntimeError(f"no Hardcharger driver library is built for {sys.platform}")
     return f"{system}_{arch}"
 
 
 def library_path() -> str:
-    """The Warp SQL driver library this Python environment uses."""
-    from adbc_driver_warpsql._driver import _driver_path
+    """The driver library this Python environment uses."""
+    from ._driver import _driver_path
 
     return _driver_path()
 

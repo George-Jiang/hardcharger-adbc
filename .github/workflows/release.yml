@@ -1,11 +1,13 @@
 name: release
 
-# On a vX.Y.Z tag: the whole test suite (ci.yml) on the tagged commit, then the wheel and sdist,
-# a GitHub Release with the tag's CHANGELOG section, and PyPI. PyPI's trusted publisher for
+# On a vX.Y.Z tag: every suite on the tagged commit (ci.yml: Go unit and live suites with the race
+# detector, the Python bindings, the README's C and Go examples), then the shared library for six
+# platforms and a wheel for five of them (not Windows arm64: pyarrow and adbc-driver-manager
+# publish no wheels there), a GitHub Release, and PyPI. PyPI's trusted publisher for
 # adbc-driver-hardcharger names this repository, this file (release.yml) and the `pypi`
 # environment, which requires an approval and accepts only v* tags.
 #
-# workflow_dispatch runs the gate and the build only: the release and publish jobs need a tag.
+# workflow_dispatch runs the tests and the builds only: the release and publish jobs need a tag.
 
 on:
   push:
@@ -26,39 +28,175 @@ jobs:
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
+      packages: read  # the server image the live suites run against
     secrets: inherit
 
   build:
     needs: tests
-    runs-on: ubuntu-24.04
+    name: wheel (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux_amd64
+            ext: so
+          - os: ubuntu-24.04-arm
+            platform: linux_arm64
+            ext: so
+          - os: macos-15
+            platform: macos_arm64
+            ext: dylib
+          - os: macos-15
+            platform: macos_amd64
+            ext: dylib
+            goarch: amd64
+          - os: windows-latest
+            platform: windows_amd64
+            ext: dll
+          # The library only: pyarrow and adbc-driver-manager publish no Windows arm64
+          # wheels, so pip can't install a wheel of this package there.
+          - os: windows-11-arm
+            platform: windows_arm64
+            ext: dll
+            library-only: true
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
+
       - name: The tag matches the package version, and CHANGELOG.md has its section
         if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
           version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' python/src/adbc_driver_hardcharger/_version.py)
           [ -n "$version" ] || { echo "::error::no __version__ in _version.py"; exit 1; }
           [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != v$version"; exit 1; }
-          awk -v ver="$version" '
-            $0 ~ "^## \\[" ver "\\]" { found = 1; next }
-            found && /^## \[/ { exit }
-            found { print }
-          ' CHANGELOG.md > release-notes.md
-          [ -s release-notes.md ] || { echo "::error::no CHANGELOG.md section for $version"; exit 1; }
-      - name: Build the wheel and sdist
+          grep -q "^## \[$version\]" CHANGELOG.md || { echo "::error::no CHANGELOG.md section for $version"; exit 1; }
+
+      - uses: ./.github/actions/go-private
+        with:
+          deploy-key: ${{ secrets.WARP_SQL_ADBC_DEPLOY_KEY }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - uses: mlugg/setup-zig@v2
+        if: runner.os == 'Linux'
+        with:
+          version: 0.17.0
+      - name: Install llvm-mingw (the aarch64 C toolchain for cgo)
+        if: matrix.os == 'windows-11-arm'
+        shell: bash
         run: |
-          set -euo pipefail
-          uv build --out-dir dist python
-          uvx twine check --strict dist/*
-          ls dist/adbc_driver_hardcharger-*-py3-none-any.whl dist/adbc_driver_hardcharger-*.tar.gz
+          # The runner's gcc is x86_64 MinGW, which can't build the aarch64 cgo runtime.
+          curl -sSL -o "$RUNNER_TEMP/llvm-mingw.zip" \
+            https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-aarch64.zip
+          unzip -q "$RUNNER_TEMP/llvm-mingw.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/llvm-mingw-20260616-ucrt-aarch64/bin" >> "$GITHUB_PATH"
+          echo "CC=aarch64-w64-mingw32-gcc" >> "$GITHUB_ENV"
+
+      - name: Build the shared library
+        shell: bash
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "1"  # explicit: it defaults to 0 when GOARCH isn't the host's
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+          VERSION: ${{ github.ref_name }}
+        run: scripts/build_lib.sh
+
+      - name: Check the glibc ceiling (2.17; the requirement is 2.28 or older)
+        if: runner.os == 'Linux'
+        run: scripts/check_glibc.sh go/build/libadbc_driver_hardcharger.so
+
+      - uses: actions/setup-python@v7
+        if: ${{ !matrix.library-only }}
+        with:
+          python-version: "3.13"
+
+      - name: Build the platform wheel
+        if: ${{ !matrix.library-only }}
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          # On macOS, name the library's architecture: setup-python's Python is universal2,
+          # which would tag an arm64-only wheel universal2. (Never set it empty elsewhere: an
+          # empty value blanks the platform tag.)
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            if [ "${{ matrix.goarch }}" = "amd64" ]; then arch=x86_64; else arch=arm64; fi
+            export _PYTHON_HOST_PLATFORM="macosx-11.0-$arch"
+          fi
+          cp go/build/libadbc_driver_hardcharger.${{ matrix.ext }} python/src/adbc_driver_hardcharger/
+          pip install build
+          cd python && python -m build --wheel
+          ls dist/
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            ls dist/*"macosx_11_0_$arch.whl" || { echo "::error::the wheel's tag isn't macosx_11_0_$arch"; exit 1; }
+            lipo -archs ../go/build/libadbc_driver_hardcharger.dylib | grep -qx "$arch" || { echo "::error::the library isn't $arch"; exit 1; }
+          fi
+
+      - name: Repair the wheel to manylinux
+        if: runner.os == 'Linux'
+        run: |
+          pip install auditwheel patchelf
+          auditwheel repair python/dist/*.whl -w python/dist-repaired
+          rm python/dist/*.whl
+          mv python/dist-repaired/*.whl python/dist/
+          ls python/dist/
+          # The library inside the wheel, as shipped, keeps the ceiling too.
+          mkdir -p "$RUNNER_TEMP/wheel" && unzip -q -o python/dist/*.whl -d "$RUNNER_TEMP/wheel"
+          scripts/check_glibc.sh "$RUNNER_TEMP/wheel/adbc_driver_hardcharger/libadbc_driver_hardcharger.so"
+          # Its platform tag promises glibc 2.28 or older (auditwheel picks the oldest that fits).
+          python3 - python/dist/*.whl <<'EOF'
+          import re, sys
+          tags = [(int(a), int(b)) for a, b in re.findall(r"manylinux_(\d+)_(\d+)", sys.argv[1])]
+          if not tags or min(tags) > (2, 28):
+              sys.exit(f"::error::{sys.argv[1]} is not installable on glibc 2.28")
+          print("glibc floor of the wheel:", "%d.%d" % min(tags))
+          EOF
+
+      # The installed wheel (its own library, not the build tree's) through the C API, from
+      # outside the source tree. Not on the macOS amd64 cross build, which this runner can't load.
+      - name: Test the installed wheel
+        if: ${{ matrix.goarch == '' && !matrix.library-only }}
+        shell: bash
+        run: |
+          python -m venv "$RUNNER_TEMP/venv"
+          if [ "$RUNNER_OS" = "Windows" ]; then py="$RUNNER_TEMP/venv/Scripts/python"; else py="$RUNNER_TEMP/venv/bin/python"; fi
+          "$py" -m pip install -q python/dist/*.whl pytest
+          cp -r python/tests "$RUNNER_TEMP/wheel-tests"
+          cd "$RUNNER_TEMP"
+          "$py" -m pytest -q -p no:cacheprovider wheel-tests/test_unit.py
+          "$py" -c "import adbc_driver_hardcharger._driver as d, sys; p = d._driver_path(); print(p); sys.exit('site-packages' not in p)"
+
+      # glibc 2.28 (RHEL/Oracle Linux 8): pip must find the wheel installable and the library
+      # must load there.
+      - name: Install and load the wheel on Oracle Linux 8
+        if: matrix.platform == 'linux_amd64'
+        run: |
+          docker run --rm -v "$PWD/python/dist:/dist:ro" -v "$PWD/python/tests:/tests:ro" oraclelinux:8 bash -euc '
+            dnf -y -q install python3.12 python3.12-pip >/dev/null
+            python3.12 -m venv /venv
+            /venv/bin/pip install -q /dist/*.whl pytest
+            cd / && /venv/bin/python -m pytest -q -p no:cacheprovider /tests/test_unit.py'
+
+      - name: Package the library
+        shell: bash
+        run: |
+          ref="${GITHUB_REF_NAME//\//-}"  # a branch name may hold slashes
+          PKG="libadbc_driver_hardcharger-${ref}-${{ matrix.platform }}"
+          mkdir -p "dist/$PKG"
+          cp go/build/libadbc_driver_hardcharger.${{ matrix.ext }} packaging/hardcharger.toml.in LICENSE "dist/$PKG/"
+          tar -C dist -czf "dist/$PKG.tar.gz" "$PKG"
+          if [ "${{ matrix.library-only }}" != true ]; then cp python/dist/*.whl dist/; fi
+
       - uses: actions/upload-artifact@v7
         with:
-          name: release-dist
+          name: dist-${{ matrix.platform }}
+          if-no-files-found: error
           path: |
-            dist/
-            release-notes.md
-          if-no-files-found: ignore
+            dist/*.tar.gz
+            dist/*.whl
 
   github-release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -67,13 +205,31 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: release-dist
+          pattern: dist-*
+          path: dist
+          merge-multiple: true
+      - name: Release notes from CHANGELOG.md
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          [ -s release-notes.md ] || { echo "::error::no CHANGELOG.md section for $version"; exit 1; }
+      - name: Six library tarballs and five wheels
+        run: |
+          test "$(find dist -name 'libadbc_driver_hardcharger-*.tar.gz' | wc -l)" -eq 6
+          test "$(find dist -name '*.whl' | wc -l)" -eq 5
       - uses: softprops/action-gh-release@v3
         with:
           body_path: release-notes.md
-          files: dist/*
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
 
   pypi:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -87,24 +243,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@v8
         with:
-          name: release-dist
-      # Publishing before the Warp SQL driver is on PyPI would ship a package nobody can install.
-      - name: adbc-driver-warpsql that satisfies the dependency is on PyPI
+          pattern: dist-*
+          path: artifacts
+          merge-multiple: true
+      - name: Collect the five wheels
         run: |
-          python3 - <<'EOF'
-          import json, re, sys, urllib.request
-          try:
-              with urllib.request.urlopen("https://pypi.org/pypi/adbc-driver-warpsql/json", timeout=30) as r:
-                  releases = json.load(r)["releases"]
-          except Exception as error:
-              sys.exit(f"::error::adbc-driver-warpsql is not on PyPI ({error}): publish it first")
-          def key(v):  # final releases only: pip ignores pre-releases for >=0.1.0
-              return tuple(int(p) for p in v.split(".")) if re.fullmatch(r"\d+\.\d+\.\d+", v) else None
-          ok = [v for v, files in releases.items() if files and key(v) and (0, 1, 0) <= key(v) < (0, 2, 0)]
-          if not ok:
-              sys.exit("::error::no adbc-driver-warpsql release >=0.1.0,<0.2 on PyPI: publish it first")
-          print("adbc-driver-warpsql on PyPI:", ", ".join(sorted(ok)))
-          EOF
+          mkdir -p dist
+          cp artifacts/*.whl dist/
+          ls -la dist/
+          test "$(find dist -name '*.whl' | wc -l)" -eq 5
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: dist/

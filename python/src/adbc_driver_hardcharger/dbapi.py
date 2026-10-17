@@ -1,4 +1,4 @@
-"""DB-API 2.0 interface for Hardcharger, on the Warp SQL ADBC driver.
+"""DB-API 2.0 interface for Hardcharger, backed by the native Go driver.
 
 Example::
 
@@ -11,24 +11,24 @@ Example::
             print(cur.fetch_arrow_table())
 
 ``hardcharger://host[:port]`` is HTTPS (TLS on), with the port defaulting to 31337; add
-``?tls=false`` for plain HTTP to a development server. Everything else is the Warp SQL driver's
-(``adbc_driver_warpsql``): the options, the cursor, Arrow results, bulk ingest, partitioned
-results and their defaults.
+``?tls=false`` for plain HTTP to a development server. The URI, the browser sign-in, tags and
+settings are handled by the driver library (``libadbc_driver_hardcharger``), so every ADBC
+language gets the same behaviour; this module only maps keyword arguments to its options.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 from collections.abc import Mapping
 from typing import Any, Literal, Optional, Union
 
-from adbc_driver_warpsql import dbapi as _warp
+import adbc_driver_manager
+from adbc_driver_manager.dbapi import Connection as _BaseConnection
+from adbc_driver_manager.dbapi import Cursor as _BaseCursor
 
-# The DB-API 2.0 module globals and type constructors.
-from adbc_driver_warpsql.dbapi import (  # noqa: F401
-    Cursor,
+# Re-export the DB-API 2.0 module globals and type constructors.
+from adbc_driver_manager.dbapi import (  # noqa: F401
     Date,
     DateFromTicks,
     Time,
@@ -40,58 +40,39 @@ from adbc_driver_warpsql.dbapi import (  # noqa: F401
     threadsafety,
 )
 
-from ._oauth import (
-    DEFAULT_TIMEOUT,
-    BrowserOpener,
-    HardchargerOAuthError,  # noqa: F401
-    get_oauth_token,
-)
-from ._options import DatabaseOptions
-from ._uri import DEFAULT_OAUTH_PORT, host_of, to_warp_uri, uses_tls
+from ._driver import _driver_path
+from ._options import ConnectionOptions, DatabaseOptions
 
 PemSource = Union[str, bytes, "os.PathLike[str]"]
 #: A query or session tag: a JSON object, as a mapping or as JSON text.
 Tag = Union[Mapping[str, Any], str]
 SettingValue = Union[str, int, bool]
 
-_SETTING_NAME = re.compile(pattern=r"^[a-z_][a-z0-9_]*$")
+
+def _tag_text(tag: Optional[Tag]) -> str:
+    if tag is None:
+        return ""
+    if isinstance(tag, str):
+        return tag
+    if isinstance(tag, Mapping):
+        return json.dumps(obj=dict(tag), separators=(",", ":"), sort_keys=True)
+    raise TypeError(f"a tag must be a mapping or JSON text, not {type(tag).__name__}")
 
 
-def _setting_name(name: str) -> str:
-    """``query_timeout`` or ``hardcharger.query_timeout`` -> ``query_timeout``."""
-    bare = name[len("hardcharger.") :] if name.lower().startswith("hardcharger.") else name
-    if not _SETTING_NAME.match(bare):
-        raise ValueError(
-            f"invalid Hardcharger setting name {name!r}: expected a name such as "
-            "'query_timeout' (lower-case letters, digits and underscores)"
-        )
-    return bare
-
-
-def _literal(value: SettingValue) -> str:
+def _setting_text(value: SettingValue) -> str:
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, int):
+    if isinstance(value, (int, str)):
         return str(value)
-    if isinstance(value, str):
-        return "'" + value.replace("'", "''") + "'"
     raise TypeError(f"a setting's value must be a str, int or bool, not {type(value).__name__}")
 
 
-def _tag_text(tag: Tag) -> str:
-    if isinstance(tag, str):
-        return tag
-    return json.dumps(obj=dict(tag), separators=(",", ":"), sort_keys=True)
+def _bare(name: str) -> str:
+    return name[len("hardcharger.") :] if name.startswith("hardcharger.") else name
 
 
-def _scope_keyword(scope: str) -> str:
-    keyword = scope.upper()
-    if keyword not in ("SESSION", "GLOBAL"):
-        raise ValueError(f"scope must be 'session' or 'global', not {scope!r}")
-    return keyword
-
-
-def _pem_text(value: PemSource) -> str:
+def _pem(value: PemSource) -> str:
+    """PEM text given directly, or read from a file path."""
     if isinstance(value, bytes):
         return value.decode(encoding="ascii")
     text = os.fspath(value)
@@ -101,20 +82,69 @@ def _pem_text(value: PemSource) -> str:
         return f.read()
 
 
-class Connection(_warp.Connection):
-    """A Warp SQL connection, plus helpers for Hardcharger's session settings and tags.
+class Cursor(_BaseCursor):
+    """Hardcharger cursor.
 
-    Every ``hardcharger.<name>`` setting that ``hardcharger_settings()`` lists can be read and
-    set; ``SET`` statements work as well (``cursor.execute(operation="SET hardcharger....")``).
+    Two DB-API niceties on top of the driver manager's cursor: after a statement without a
+    result set (DDL, DML) ``description`` is ``None``, and fetching returns an empty result
+    (``None``/``[]``) instead of raising, as ``sqlite3`` and ``duckdb`` do. Fetching before any
+    ``execute()`` still raises. ``execute_update()`` returns the rows affected directly.
     """
 
-    def _run(self, sql: str) -> None:
+    _executed_without_result_set = False
+
+    def execute(self, operation, parameters=None):
+        """Execute a statement. Returns this cursor."""
+        self._executed_without_result_set = False
+        super().execute(operation=operation, parameters=parameters)
+        if self._results is not None and len(self._results.description) == 0:
+            self._results.close()
+            self._results = None
+            self._executed_without_result_set = True
+        return self
+
+    def execute_update(self, query: str) -> int:
+        """Execute a statement without a result set; return the rows affected (-1 when the
+        server does not report a count, e.g. for DDL)."""
+        self.adbc_statement.set_sql_query(query)
+        rowcount = self.adbc_statement.execute_update()
+        self._rowcount = rowcount
+        self._results = None
+        self._last_query = query
+        self._executed_without_result_set = True
+        return rowcount
+
+    def fetchone(self):
+        if self._results is None and self._executed_without_result_set:
+            return None
+        return super().fetchone()
+
+    def fetchmany(self, size=None):
+        if self._results is None and self._executed_without_result_set:
+            return []
+        if size is None:
+            return super().fetchmany()
+        return super().fetchmany(size=size)
+
+    def fetchall(self):
+        if self._results is None and self._executed_without_result_set:
+            return []
+        return super().fetchall()
+
+
+class Connection(_BaseConnection):
+    """A Hardcharger connection: helpers for session settings and tags, through the driver's
+    ``adbc.hardcharger.*`` connection options."""
+
+    def cursor(self, *, adbc_stmt_kwargs: Optional[dict[str, Any]] = None) -> Cursor:
+        """Create a new :class:`Cursor`."""
+        cursor = Cursor(conn=self, adbc_stmt_kwargs=adbc_stmt_kwargs, dbapi_backend=self._backend)
+        self._cursors.add(cursor)
+        return cursor
+
+    def _scalar(self, sql: str) -> Any:
         with self.cursor() as cur:
             cur.execute(operation=sql)
-
-    def _scalar(self, sql: str, parameters: Optional[list] = None) -> Any:
-        with self.cursor() as cur:
-            cur.execute(operation=sql, parameters=parameters)
             row = cur.fetchone()
             return None if row is None else row[0]
 
@@ -123,38 +153,44 @@ class Connection(_warp.Connection):
     ) -> None:
         """``SET [SESSION | GLOBAL] hardcharger.<name> = <value>``.
 
-        Session settings (``query_timeout``, ``query_tag``, ...) apply to this connection's
-        session; global ones (``max_concurrent_statements``, ...) to the whole server, and only
-        an admin may set them.
+        Session settings (``query_timeout``, ...) apply to this connection's session; global
+        ones (``max_concurrent_statements``, ...) to the whole server, and only an admin may
+        set them.
         """
-        bare = _setting_name(name=name)
-        self._run(sql=f"SET {_scope_keyword(scope=scope)} hardcharger.{bare} = {_literal(value)}")
+        if scope == "session":
+            prefix = ConnectionOptions.SETTING_PREFIX.value
+        elif scope == "global":
+            prefix = ConnectionOptions.GLOBAL_SETTING_PREFIX.value
+        else:
+            raise ValueError(f"scope must be 'session' or 'global', not {scope!r}")
+        text = _setting_text(value=value)
+        if text == "":
+            raise ValueError("a setting's value can't be empty: use reset_setting()")
+        self.adbc_connection.set_options(**{prefix + _bare(name=name): text})
 
     def reset_setting(self, name: str, *, scope: Literal["session", "global"] = "session") -> None:
         """``RESET [SESSION | GLOBAL] hardcharger.<name>``: back to the server's value."""
-        bare = _setting_name(name=name)
-        self._run(sql=f"RESET {_scope_keyword(scope=scope)} hardcharger.{bare}")
+        prefix = (
+            ConnectionOptions.GLOBAL_SETTING_PREFIX.value
+            if scope == "global"
+            else ConnectionOptions.SETTING_PREFIX.value
+        )
+        self.adbc_connection.set_options(**{prefix + _bare(name=name): ""})
 
-    def get_setting(self, name: str) -> Optional[str]:
+    def get_setting(self, name: str) -> str:
         """The value of ``hardcharger.<name>`` that applies to this session, as text.
 
         Raises:
             KeyError: when the server has no such setting, or it is admin-only and this
                 session's user is not an admin.
         """
-        bare = _setting_name(name=name)
-        # The name is a literal, not a bound parameter: hardcharger-server 0.2.0's
-        # hardcharger_settings() returns no rows when a prepared statement runs it a second
-        # time with another parameter. _setting_name allows only [a-z0-9_], so this is safe.
-        with self.cursor() as cur:
-            cur.execute(
-                operation="SELECT CAST(value AS VARCHAR) FROM hardcharger_settings() "
-                f"WHERE name = 'hardcharger.{bare}'"
-            )
-            rows = cur.fetchall()
-        if not rows:
-            raise KeyError(f"no Hardcharger setting hardcharger.{bare} visible to this session")
-        return rows[0][0]
+        key = ConnectionOptions.SETTING_PREFIX.value + _bare(name=name)
+        try:
+            return self.adbc_connection.get_option(key=key)
+        except adbc_driver_manager.Error as error:
+            if error.status_code == adbc_driver_manager.AdbcStatusCode.NOT_FOUND:
+                raise KeyError(str(error)) from None
+            raise
 
     def settings(self):
         """Every setting visible to this session (``hardcharger_settings()``), as an Arrow table."""
@@ -163,22 +199,15 @@ class Connection(_warp.Connection):
             return cur.fetch_arrow_table()
 
     def set_query_tag(self, tag: Optional[Tag]) -> None:
-        """Tag this session's following statements (``hardcharger.query_tag``).
-
-        Hardcharger records the tag, a JSON object, with each statement in its instrumentation
-        tables (``--enable-instrumentation``). ``None`` removes it.
-        """
-        if tag is None:
-            self.reset_setting(name="query_tag")
-        else:
-            self.set_setting(name="query_tag", value=_tag_text(tag=tag))
+        """Tag this session's following statements (``hardcharger.query_tag``), a JSON object
+        Hardcharger records with each statement in its instrumentation. ``None`` removes it."""
+        self.adbc_connection.set_options(**{ConnectionOptions.QUERY_TAG.value: _tag_text(tag=tag)})
 
     def set_session_tag(self, tag: Optional[Tag]) -> None:
         """Tag this session (``hardcharger.session_tag``), a JSON object; ``None`` removes it."""
-        if tag is None:
-            self.reset_setting(name="session_tag")
-        else:
-            self.set_setting(name="session_tag", value=_tag_text(tag=tag))
+        self.adbc_connection.set_options(
+            **{ConnectionOptions.SESSION_TAG.value: _tag_text(tag=tag)}
+        )
 
     def current_user(self) -> str:
         """The signed-in user (``HARDCHARGER_USER()``)."""
@@ -202,9 +231,9 @@ def connect(
     access_token: Optional[str] = None,
     auth_type: Literal["password", "external"] = "password",
     oauth_url: Optional[str] = None,
-    oauth_port: int = DEFAULT_OAUTH_PORT,
-    oauth_timeout: float = DEFAULT_TIMEOUT,
-    open_browser: BrowserOpener = True,
+    oauth_port: Optional[int] = None,
+    oauth_timeout: Optional[float] = None,
+    open_browser: Union[bool, str] = True,
     session_tag: Optional[Tag] = None,
     query_tag: Optional[Tag] = None,
     settings: Optional[Mapping[str, SettingValue]] = None,
@@ -228,17 +257,18 @@ def connect(
         username: User name for password sign-in.
         password: Password for password sign-in.
         access_token: A Hardcharger access token obtained elsewhere.
-        auth_type: ``"password"`` (default; also for ``access_token``) or ``"external"``: sign
-            in through the server's browser sign-in (``hardcharger-server --oauth-client-id``).
+        auth_type: ``"password"`` (default) or ``"external"``: sign in through the server's
+            browser sign-in (``hardcharger-server --oauth-client-id``).
         oauth_url: Base URL of the browser sign-in server (``--oauth-base-url``). Default:
             ``https://HOST:oauth_port``, or ``http://`` when the URI says ``?tls=false``.
         oauth_port: Port of the browser sign-in server (default 31339).
-        oauth_timeout: Seconds to wait for the browser sign-in.
-        open_browser: ``True`` opens the system browser for the sign-in, ``False`` prints the
-            URL, and a callable is called with it.
-        session_tag: A JSON object tagging this session (``hardcharger.session_tag``).
-        query_tag: A JSON object tagging this session's statements (``hardcharger.query_tag``).
-        settings: More ``hardcharger.<name>`` session settings to apply, e.g.
+        oauth_timeout: Seconds to wait for the browser sign-in (default 300).
+        open_browser: ``True`` opens the system browser (or ``$HARDCHARGER_BROWSER``),
+            ``False`` prints the URL to stderr, and a string is the command to open it with
+            (the URL is appended).
+        session_tag: A JSON object tagging the session (``hardcharger.session_tag``).
+        query_tag: A JSON object tagging the session's statements (``hardcharger.query_tag``).
+        settings: ``hardcharger.<name>`` session settings to apply, e.g.
             ``{"query_timeout": 60}``.
         tls_skip_verify: Do not verify the server's certificate (development only).
         tls_root_certs: CA certificates to trust, as PEM text or a file path.
@@ -246,82 +276,82 @@ def connect(
         tls_client_key: The client certificate's private key (PEM text or path).
         catalog: Catalog to make current for the session.
         db_schema: Schema to make current for the session.
-        db_kwargs: Extra ADBC database options (``adbc.warp.*``, telemetry).
+        db_kwargs: Extra ADBC database options (``adbc.hardcharger.*``, ``adbc.warp.*``).
         conn_kwargs: Extra ADBC connection options.
         autocommit: Enable autocommit (default True).
 
     Returns:
         A DB-API 2.0 :class:`Connection`.
-
-    Raises:
-        HardchargerOAuthError: when the browser sign-in fails.
-        ValueError: for an invalid URI, ``auth_type`` or setting name.
     """
-    warp_uri = None
-    if uri is not None and not uri.startswith("profile://"):
-        warp_uri = to_warp_uri(uri=uri)
-    elif uri is not None:
-        warp_uri = uri
+    if uri is None and profile is None:
+        raise ValueError("Must provide at least one of 'uri' or 'profile'.")
+    if auth_type not in ("password", "external"):
+        raise ValueError(f"invalid auth_type {auth_type!r}: expected 'password' or 'external'")
+    if auth_type == "external" and (username or password or access_token):
+        raise ValueError(
+            "auth_type='external' signs in through the browser: drop username, password and "
+            "access_token"
+        )
 
     db_kwargs = dict(db_kwargs or {})
+    conn_kwargs = dict(conn_kwargs or {})
+    options = DatabaseOptions
+
+    def put(key: str, value: Optional[str]) -> None:
+        if value is not None:
+            db_kwargs.setdefault(key, value)
+
+    if uri is not None and uri.startswith("profile://"):
+        put(key="profile", value=uri[len("profile://") :])
+    else:
+        put(key="uri", value=uri)
+    put(key="profile", value=profile)
+    put(key="username", value=username)
+    put(key="password", value=password)
+    put(key=options.ACCESS_TOKEN.value, value=access_token)
     if auth_type == "external":
-        if username is not None or password is not None or access_token is not None:
-            raise ValueError(
-                "auth_type='external' signs in through the browser: drop username, "
-                "password and access_token"
-            )
-        if oauth_url is None and (warp_uri is None or warp_uri.startswith("profile://")):
-            raise ValueError(
-                "auth_type='external' with a connection profile needs an explicit uri or oauth_url"
-            )
-        result = get_oauth_token(
-            oauth_url=oauth_url,
-            host=None if warp_uri is None else host_of(warp_uri=warp_uri),
-            port=oauth_port,
-            tls=warp_uri is None or uses_tls(warp_uri=warp_uri),
-            tls_skip_verify=tls_skip_verify,
-            tls_root_certs=None if tls_root_certs is None else _pem_text(value=tls_root_certs),
-            timeout=oauth_timeout,
-            open_browser=open_browser,
-        )
-        db_kwargs[DatabaseOptions.SUBJECT_TOKEN.value] = result.token
-    elif auth_type != "password":
-        raise ValueError(f"invalid auth_type {auth_type!r}: expected 'password' or 'external'")
-
-    # Validate before connecting, so a typo fails fast and leaves no session behind.
-    session_settings: list[tuple[str, SettingValue]] = [
-        (_setting_name(name=name), value) for name, value in (settings or {}).items()
-    ]
-    for value in (session_tag, query_tag):
-        if value is not None and not isinstance(value, (str, Mapping)):
-            raise TypeError(f"a tag must be a mapping or JSON text, not {type(value).__name__}")
-
-    conn = _warp.connect(
-        uri=warp_uri,
-        profile=profile,
-        username=username,
-        password=password,
-        access_token=access_token,
-        tls_skip_verify=tls_skip_verify,
-        tls_root_certs=tls_root_certs,
-        tls_client_cert=tls_client_cert,
-        tls_client_key=tls_client_key,
-        catalog=catalog,
-        db_schema=db_schema,
-        db_kwargs=db_kwargs,
-        conn_kwargs=conn_kwargs,
-        autocommit=autocommit,
+        put(key=options.AUTH_TYPE.value, value="external")
+    put(key=options.OAUTH_URL.value, value=oauth_url)
+    put(key=options.OAUTH_PORT.value, value=None if oauth_port is None else str(oauth_port))
+    put(
+        key=options.OAUTH_TIMEOUT_SECONDS.value,
+        value=None if oauth_timeout is None else str(oauth_timeout),
     )
-    # The Warp SQL driver builds the connection; this class adds methods and no state.
-    conn.__class__ = Connection
+    if open_browser is False:
+        put(key=options.OAUTH_BROWSER.value, value="none")
+    elif isinstance(open_browser, str):
+        put(key=options.OAUTH_BROWSER.value, value=open_browser)
+    if session_tag is not None:
+        put(key=options.SESSION_TAG.value, value=_tag_text(tag=session_tag))
+    if query_tag is not None:
+        put(key=options.QUERY_TAG.value, value=_tag_text(tag=query_tag))
+    for name, value in (settings or {}).items():
+        put(key=options.SETTING_PREFIX.value + _bare(name=name), value=_setting_text(value=value))
+    if tls_skip_verify:
+        put(key=options.TLS_SKIP_VERIFY.value, value="true")
+    for key, value in (
+        (options.TLS_ROOT_CERTS.value, tls_root_certs),
+        (options.TLS_CLIENT_CERT.value, tls_client_cert),
+        (options.TLS_CLIENT_KEY.value, tls_client_key),
+    ):
+        if value is not None:
+            put(key=key, value=_pem(value=value))
+
+    standard = adbc_driver_manager.ConnectionOptions
+    if catalog is not None:
+        conn_kwargs.setdefault(standard.CURRENT_CATALOG.value, catalog)
+    if db_schema is not None:
+        conn_kwargs.setdefault(standard.CURRENT_DB_SCHEMA.value, db_schema)
+
+    db = None
+    conn = None
     try:
-        if session_tag is not None:
-            conn.set_session_tag(tag=session_tag)
-        if query_tag is not None:
-            conn.set_query_tag(tag=query_tag)
-        for name, value in session_settings:
-            conn.set_setting(name=name, value=value)
-    except BaseException:
-        conn.close()
+        db = adbc_driver_manager.AdbcDatabase(driver=_driver_path(), **db_kwargs)
+        conn = adbc_driver_manager.AdbcConnection(database=db, **conn_kwargs)
+        return Connection(db=db, conn=conn, autocommit=autocommit)
+    except Exception:
+        if conn:
+            conn.close()
+        if db:
+            db.close()
         raise
-    return conn

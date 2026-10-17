@@ -1,13 +1,19 @@
 name: ci
 
-# Lint, unit tests and the integration tests against a real hardcharger-server, on every push
-# and pull request; also the release gate (release.yml calls it on the tagged commit).
+# Every suite, on every push and pull request; also the release gate (release.yml calls it on
+# the tagged commit):
+#   - Go: gofmt, vet, unit tests and the live-server suite, with the race detector;
+#   - the C shared library, its glibc ceiling, and the Python bindings' unit and live tests;
+#   - the README's C (through the ADBC driver manager and the manifest) and Go examples, run
+#     against a server on the default port;
+#   - the library and Python unit tests on macOS and Windows.
 #
-# Two internal repositories are read with the GIZMODATA_READ_TOKEN secret (a fine-grained token,
-# resource owner gizmodata, Contents: read-only on gizmodata/warp-sql-adbc and
-# gizmodata/hardcharger): the warp-sql-adbc submodule (adbc-driver-warpsql isn't on PyPI yet,
-# so its wheel is built here) and hardcharger-server from Hardcharger's GitHub Releases. This
-# repository's own GITHUB_TOKEN can't read other repositories. The token is never printed.
+# Access, with no personal token:
+#   - github.com/gizmodata/warp-sql-adbc (internal; a Go module dependency) through the
+#     WARP_SQL_ADBC_DEPLOY_KEY secret, a read-only deploy key of that repository;
+#   - hardcharger-server from the private image ghcr.io/gizmodata/hardcharger, pulled with this
+#     workflow's GITHUB_TOKEN; the package grants this repository read access (package
+#     settings, Manage Actions access).
 
 on:
   push:
@@ -18,126 +24,134 @@ on:
 
 permissions:
   contents: read
+  packages: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
 env:
-  # The server the integration tests run against (a gizmodata/hardcharger release).
-  HARDCHARGER_SERVER_VERSION: "0.2.0"
+  # The server the live suites run against. Needs a build from hardcharger 3fbd36b or later
+  # (table functions re-read on each execution); 0.2.0 predates it.
+  HARDCHARGER_IMAGE: ghcr.io/gizmodata/hardcharger:0.2.0
+  # The ADBC C driver manager for the C example (apache/arrow-adbc release).
+  ARROW_ADBC_TAG: apache-arrow-adbc-24
 
 jobs:
-  token:
-    name: read token
+  linux:
+    name: Go, Python ${{ matrix.python }} and examples (linux)
     runs-on: ubuntu-24.04
-    steps:
-      - name: GIZMODATA_READ_TOKEN can read warp-sql-adbc and hardcharger's releases
-        env:
-          TOKEN: ${{ secrets.GIZMODATA_READ_TOKEN }}
-        run: |
-          if [ -z "$TOKEN" ]; then
-            echo "::error::the GIZMODATA_READ_TOKEN secret is not set: a fine-grained token, resource owner gizmodata, Contents: read-only on gizmodata/warp-sql-adbc and gizmodata/hardcharger"
-            exit 1
-          fi
-          printf 'Authorization: Bearer %s\n' "$TOKEN" > "$RUNNER_TEMP/h"
-          for url in repos/gizmodata/warp-sql-adbc repos/gizmodata/hardcharger/releases/tags/v$HARDCHARGER_SERVER_VERSION; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' -H @"$RUNNER_TEMP/h" "https://api.github.com/$url")
-            if [ "$code" != 200 ]; then
-              rm -f "$RUNNER_TEMP/h"
-              echo "::error::GIZMODATA_READ_TOKEN can't read $url (HTTP $code)"
-              exit 1
-            fi
-          done
-          rm -f "$RUNNER_TEMP/h"
-
-  test:
-    name: tests (${{ matrix.platform }}, Python ${{ matrix.python }})
-    needs: token
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: ubuntu-24.04
-            platform: linux-amd64
-            python: "3.10"
-          - runner: ubuntu-24.04
-            platform: linux-amd64
-            python: "3.14"
-          - runner: macos-15
-            platform: macos-arm64
-            python: "3.14"
-    runs-on: ${{ matrix.runner }}
+        python: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v7
-
-      - name: Fetch the warp-sql-adbc submodule
-        env:
-          TOKEN: ${{ secrets.GIZMODATA_READ_TOKEN }}
-        run: |
-          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
-            submodule update --init --depth 1
-
+      - uses: ./.github/actions/go-private
+        with:
+          deploy-key: ${{ secrets.WARP_SQL_ADBC_DEPLOY_KEY }}
       - uses: actions/setup-go@v7
         with:
-          go-version-file: third_party/warp-sql-adbc/go/go.mod
-          cache-dependency-path: third_party/warp-sql-adbc/go/go.sum
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
       - uses: mlugg/setup-zig@v2
-        if: runner.os == 'Linux'
         with:
           version: 0.17.0
+      - uses: ./.github/actions/hardcharger-server
+        with:
+          image: ${{ env.HARDCHARGER_IMAGE }}
+          token: ${{ github.token }}
+
+      - name: gofmt and vet
+        working-directory: go
+        run: |
+          test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+          go vet ./...
+          go vet -tags integration ./...
+      - name: Go unit tests
+        working-directory: go
+        run: make test
+      # Fails without the server, and when no integration test ran.
+      - name: Go live suite (race detector)
+        if: matrix.python == '3.14'
+        working-directory: go
+        run: make integration-test
+
+      - name: Build the shared library
+        run: scripts/build_lib.sh
+      - name: Check the glibc ceiling (2.17)
+        run: scripts/check_glibc.sh go/build/libadbc_driver_hardcharger.so
+
       - uses: astral-sh/setup-uv@v10.3.0
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python }}
-
-      - name: Build adbc-driver-warpsql from the submodule
-        run: scripts/build_warpsql_wheel.sh
-
-      - name: Download hardcharger-server ${{ env.HARDCHARGER_SERVER_VERSION }}
-        env:
-          GH_TOKEN: ${{ secrets.GIZMODATA_READ_TOKEN }}
-        run: |
-          gh release download "v$HARDCHARGER_SERVER_VERSION" -R gizmodata/hardcharger \
-            -p "hardcharger-${{ matrix.platform }}.tar.gz" -D "$RUNNER_TEMP"
-          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/hardcharger-${{ matrix.platform }}.tar.gz"
-          binary="$RUNNER_TEMP/hardcharger-${{ matrix.platform }}/bin/hardcharger-server"
-          test "$("$binary" --version)" = "Hardcharger $HARDCHARGER_SERVER_VERSION"
-          echo "HARDCHARGER_ADBC_TEST_SERVER_BINARY=$binary" >> "$GITHUB_ENV"
-
-      - name: Install
+      - name: Python lint and tests (unit and live, against the built library)
         working-directory: python
         run: |
           uv venv .venv --python "${{ matrix.python }}"
-          uv pip install --python .venv/bin/python --override ../build/overrides.txt -e ".[test,dev]"
-
-      - name: Lint
-        working-directory: python
-        run: |
+          uv pip install --python .venv/bin/python -e ".[test,dev]"
           .venv/bin/ruff check src tests
           .venv/bin/ruff format --check src tests
+          .venv/bin/python -m pytest -v
 
-      # Unit and integration tests together; the integration tests fail without the server,
-      # and pytest exits 5 when nothing is collected.
-      - name: Tests
-        working-directory: python
-        run: .venv/bin/python -m pytest -v
-
-  package:
-    name: build and check the package
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.3.0
-      - name: Build the wheel and sdist
-        run: uv build --out-dir dist python
-      - name: Check them
+      # The README's examples, as written: a server on the default port 31337 with the
+      # README's credentials, the driver found by name through the manifest.
+      - name: Build the ADBC C driver manager
+        if: matrix.python == '3.14'
+        run: |
+          git clone -q --depth 1 --branch "$ARROW_ADBC_TAG" https://github.com/apache/arrow-adbc.git "$RUNNER_TEMP/arrow-adbc"
+          cmake -S "$RUNNER_TEMP/arrow-adbc/c" -B "$RUNNER_TEMP/adbc-build" -DCMAKE_BUILD_TYPE=Release \
+            -DADBC_DRIVER_MANAGER=ON -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/adbc" >/dev/null
+          cmake --build "$RUNNER_TEMP/adbc-build" -j 4 >/dev/null
+          cmake --install "$RUNNER_TEMP/adbc-build" >/dev/null
+      - name: README examples (C through the driver manager, Go)
+        if: matrix.python == '3.14'
         run: |
           set -euo pipefail
-          uvx twine check --strict dist/*
-          # Pure Python, and the dependency is the published package, not a local wheel.
-          ls dist/adbc_driver_hardcharger-*-py3-none-any.whl
-          unzip -p dist/adbc_driver_hardcharger-*.whl '*/METADATA' > METADATA
-          grep -qx 'Requires-Dist: adbc-driver-warpsql<0.2,>=0.1.0' METADATA
-          if grep -q 'file://' METADATA; then echo "::error::a local path leaked into the metadata"; exit 1; fi
+          mkdir -p "$RUNNER_TEMP/readme"
+          (cd "$RUNNER_TEMP/readme" && env -i PATH="$PATH" HARDCHARGER_ADMIN_PASSWORD=change-me \
+            "$HARDCHARGER_ADBC_TEST_SERVER_BINARY" --print-queries false > server.log 2>&1 &)
+          for _ in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:31337/warp && break; sleep 1; done
+          python/.venv/bin/python -m adbc_driver_hardcharger.manifest --dir "$RUNNER_TEMP/manifests"
+          cc -Wall examples/c/hello.c -I"$RUNNER_TEMP/adbc/include" -L"$RUNNER_TEMP/adbc/lib" \
+            -ladbc_driver_manager -Wl,-rpath,"$RUNNER_TEMP/adbc/lib" -o "$RUNNER_TEMP/hello"
+          ADBC_DRIVER_PATH="$RUNNER_TEMP/manifests" "$RUNNER_TEMP/hello" | tee c.out
+          grep -qx 'answer = 42' c.out
+          (cd go && go run ./examples/hello) | tee go.out
+          grep -q 'col\[0\]\[answer\]: \[42\]' go.out
+
+  platforms:
+    name: library and Python unit tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/go-private
+        with:
+          deploy-key: ${{ secrets.WARP_SQL_ADBC_DEPLOY_KEY }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+      - name: Go unit tests
+        shell: bash
+        working-directory: go
+        run: go test ./...
+      - name: Build the shared library
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: scripts/build_lib.sh
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+      - name: Python unit tests (against the built library)
+        shell: bash
+        working-directory: python
+        run: |
+          python -m pip install -e ".[test]"
+          python -m pytest -v -m "not integration"

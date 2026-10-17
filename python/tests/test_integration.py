@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
+import pathlib
+import subprocess
+import sys
 import time
-import urllib.parse
-import urllib.request
 
 import adbc_driver_manager
 import adbc_driver_manager.dbapi
 import pytest
 
-from adbc_driver_hardcharger import HardchargerOAuthError, manifest
 from adbc_driver_hardcharger import dbapi as hardcharger
+from adbc_driver_hardcharger import manifest
 from conftest import USERNAME, free_port, make_certificates, start_server, stop_server
-from mock_idp import MockIdP
 
 pytestmark = pytest.mark.integration
 
@@ -53,7 +53,7 @@ def test_select_through_a_hardcharger_uri(conn):
 def test_the_server_reports_itself_as_hardcharger(conn):
     info = conn.adbc_get_info()
     assert info["vendor_name"] == "Hardcharger"
-    assert info["driver_name"] == "ADBC Warp SQL Driver - Go"
+    assert info["driver_name"] == "ADBC Hardcharger Driver - Go"
 
 
 def test_connection_helpers(conn):
@@ -85,12 +85,14 @@ def test_warp_uri_works_too(hc_server):
 
 
 def test_plain_http_spelling_must_be_tls_false(hc_server):
-    with pytest.raises(expected_exception=ValueError, match=r"\?tls=false for plain HTTP"):
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
         hardcharger.connect(
             uri=f"hardcharger+http://127.0.0.1:{hc_server.port}",
             username=USERNAME,
             password=hc_server.password,
         )
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.INVALID_ARGUMENT
+    assert "hardcharger://host:port?tls=false for plain HTTP" in str(error.value)
 
 
 def test_ddl_dml_and_bulk_ingest(conn):
@@ -343,11 +345,37 @@ CLIENT_ID = "hardcharger-adbc-client"
 CLIENT_SECRET = "hardcharger-adbc-secret"
 
 
+class IdP:
+    """The mock identity provider, running in its own process (see mock_idp.py)."""
+
+    email = "analyst@gizmodata.com"
+    valid_code = "code-ok"
+
+    def __init__(self, issuer: str, process: subprocess.Popen):
+        self.issuer = issuer
+        self.process = process
+
+
 @pytest.fixture(scope="module")
 def idp():
-    provider = MockIdP(audience=AUDIENCE, client_id=CLIENT_ID, client_secret=CLIENT_SECRET)
-    yield provider
-    provider.stop()
+    process = subprocess.Popen(
+        args=[
+            sys.executable,
+            str(pathlib.Path(__file__).with_name("mock_idp.py")),
+            AUDIENCE,
+            CLIENT_ID,
+            CLIENT_SECRET,
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    issuer = process.stdout.readline().strip()
+    if not issuer.startswith("http://127.0.0.1:"):
+        process.kill()
+        pytest.fail(reason=f"the mock identity provider did not start: {issuer!r}")
+    yield IdP(issuer=issuer, process=process)
+    process.kill()
+    process.wait()
 
 
 @pytest.fixture(scope="module")
@@ -377,27 +405,21 @@ def oauth_server(tmp_path_factory, idp):
     stop_server(server=server)
 
 
-def browser_that_signs_in(server, code: str):
-    """A stand-in for the user's browser: the identity provider sends it back to the
-    server's callback with ``code``, as after a sign-in."""
+FAKE_BROWSER = f"{sys.executable} {pathlib.Path(__file__).with_name('fake_browser.py')}"
 
-    def open_browser(auth_url: str) -> None:
-        state = urllib.parse.parse_qs(qs=urllib.parse.urlsplit(url=auth_url).query)["state"][0]
-        query = urllib.parse.urlencode(query={"code": code, "state": state})
-        url = f"http://127.0.0.1:{server.oauth_port}/oauth/callback?{query}"
-        with urllib.request.urlopen(url=url, timeout=10) as response:
-            response.read()
 
-    return open_browser
+def browser(code: str) -> str:
+    """The fake browser command, handing ``code`` to the server's callback."""
+    return f"{FAKE_BROWSER} {code}"
 
 
 def test_browser_sign_in(oauth_server, idp):
-    idp.valid_code = "code-ok"
     with hardcharger.connect(
         uri=oauth_server.uri,
         auth_type="external",
         oauth_port=oauth_server.oauth_port,
-        open_browser=browser_that_signs_in(server=oauth_server, code="code-ok"),
+        open_browser=browser(code="code-ok"),
+        oauth_timeout=30,
     ) as conn:
         assert conn.current_user() == idp.email
         with conn.cursor() as cur:
@@ -406,61 +428,83 @@ def test_browser_sign_in(oauth_server, idp):
 
 
 def test_browser_sign_in_with_a_rejected_code(oauth_server, idp):
-    idp.valid_code = "code-ok"
-    with pytest.raises(expected_exception=HardchargerOAuthError) as error:
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
         hardcharger.connect(
             uri=oauth_server.uri,
             auth_type="external",
             oauth_port=oauth_server.oauth_port,
-            open_browser=browser_that_signs_in(server=oauth_server, code="code-bad"),
+            open_browser=browser(code="code-bad"),
+            oauth_timeout=30,
         )
-    assert "the browser sign-in failed" in str(error.value)
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.UNAUTHENTICATED
+    assert "browser sign-in: the sign-in failed" in str(error.value)
     assert "invalid_grant" in str(error.value)
 
 
 def test_browser_sign_in_with_an_explicit_oauth_url(oauth_server, idp):
-    idp.valid_code = "code-ok"
     with hardcharger.connect(
         uri=oauth_server.uri,
         auth_type="external",
         oauth_url=f"http://127.0.0.1:{oauth_server.oauth_port}",
-        open_browser=browser_that_signs_in(server=oauth_server, code="code-ok"),
+        open_browser=browser(code="code-ok"),
+        oauth_timeout=30,
     ) as conn:
         assert conn.current_user() == idp.email
 
 
-# --- the ADBC driver manifest --------------------------------------------------------------
+# --- the ADBC driver manifest: other languages load the same library by name ----------------
 
 
-def test_manifest_loads_the_driver_by_name(hc_server, tmp_path, monkeypatch):
+def test_manifest_loads_the_driver_by_name_with_a_hardcharger_uri(hc_server, tmp_path, monkeypatch):
     manifest.install(directory=tmp_path)
     monkeypatch.setenv(name="ADBC_DRIVER_PATH", value=str(tmp_path))
     with adbc_driver_manager.dbapi.connect(
         driver="hardcharger",
         db_kwargs={
-            "uri": f"warp://127.0.0.1:{hc_server.port}?tls=false",
+            "uri": f"hardcharger://127.0.0.1:{hc_server.port}?tls=false",
             "username": USERNAME,
             "password": hc_server.password,
+            "adbc.hardcharger.query_tag": '{"via": "manifest"}',
         },
         autocommit=True,
     ) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT HARDCHARGER_USER()")
             assert cur.fetchone() == (USERNAME,)
+        assert conn.adbc_get_info()["driver_name"] == "ADBC Hardcharger Driver - Go"
+        assert conn.adbc_connection.get_option(key="adbc.hardcharger.query_tag") == (
+            '{"via": "manifest"}'
+        )
 
 
-def test_manifest_takes_warp_uris_not_hardcharger_ones(hc_server, tmp_path, monkeypatch):
+def test_manifest_refuses_a_bad_scheme(hc_server, tmp_path, monkeypatch):
     manifest.install(directory=tmp_path)
     monkeypatch.setenv(name="ADBC_DRIVER_PATH", value=str(tmp_path))
     with pytest.raises(
-        expected_exception=adbc_driver_manager.Error,
-        match=r"the scheme must be warp://, https:// or http://",
+        expected_exception=adbc_driver_manager.Error, match=r"\?tls=false for plain HTTP"
     ):
         adbc_driver_manager.dbapi.connect(
             driver="hardcharger",
             db_kwargs={
-                "uri": f"hardcharger://127.0.0.1:{hc_server.port}?tls=false",
+                "uri": f"hardcharger+http://127.0.0.1:{hc_server.port}",
                 "username": USERNAME,
                 "password": hc_server.password,
             },
         )
+
+
+def test_a_prepared_settings_query_re_executes_with_new_parameters(conn):
+    """hardcharger-server before 3fbd36b answered no rows the second time: its table functions
+    built their rows at bind time. get_setting() relies on this."""
+    with conn.cursor() as cur:
+        for name, want in (
+            ("hardcharger.query_timeout", "0"),
+            ("hardcharger.graceful_shutdown", "true"),
+            ("hardcharger.bypass_queue", "false"),
+        ):
+            cur.execute(
+                operation="SELECT CAST(value AS VARCHAR) FROM hardcharger_settings() "
+                "WHERE name = ?",
+                parameters=[name],
+            )
+            assert cur.fetchall() == [(want,)], name
