@@ -9,7 +9,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - The Hardcharger ADBC driver: a Go package (`github.com/gizmodata/hardcharger-adbc/go/hardcharger`)
-  on the Warp SQL ADBC driver (`warpsql.NewDriverWithName`), compiled to the C shared library
+  on the Warp SQL ADBC driver (warp-sql-adbc 33b29e9, `warpsql.NewDriverWithName`), compiled to the C shared library
   `libadbc_driver_hardcharger` (entry point `AdbcDriverHardchargerInit`), so every ADBC
   language gets:
   - `hardcharger://host[:port][/base-path][?tls=false]` URIs: Warp SQL's `warp://` with port

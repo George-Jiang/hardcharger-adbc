@@ -228,7 +228,9 @@ The live suites start real `hardcharger-server` processes on free loopback ports
 TLS, instrumentation, browser sign-in against a mock identity provider) and, in Python, load
 the library by manifest through the driver manager. Without a server binary they fail, never
 skip, and a Go run in which no live test ran fails too. CI also builds the ADBC C driver
-manager and runs the C and Go examples against a server on the default port.
+manager and runs the C and Go examples against a server on the default port. CI's server is
+the `ghcr.io/gizmodata/hardcharger:main` image (Hardcharger's main branch), pulled with
+`GITHUB_TOKEN`; pin a `:sha-<short>` tag in `ci.yml` to reproduce an old run.
 
 ## 📦 Releasing
 
