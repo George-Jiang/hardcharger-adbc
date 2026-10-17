@@ -1,0 +1,3 @@
+[submodule "third_party/warp-sql-adbc"]
+	path = third_party/warp-sql-adbc
+	url = https://github.com/gizmodata/warp-sql-adbc.git

@@ -1,0 +1,28 @@
+# adbc-driver-hardcharger
+
+The Python [ADBC](https://arrow.apache.org/adbc/) driver for
+[Hardcharger](https://github.com/gizmodata/hardcharger), GizmoData's DuckDB 2.0 server: a thin
+layer on the generic [Warp SQL ADBC driver](https://github.com/gizmodata/warp-sql-adbc)
+(`adbc-driver-warpsql`) with `hardcharger://` URIs (port 31337 by default), query and session
+tags, `hardcharger.*` session settings, browser sign-in and an ADBC driver manifest.
+
+```bash
+pip install adbc-driver-hardcharger     # this client
+pip install hardcharger                 # the Hardcharger server, started from Python
+pip install "hardcharger[adbc]"         # both
+```
+
+```python
+from adbc_driver_hardcharger import dbapi as hardcharger
+
+with hardcharger.connect(uri="hardcharger://localhost?tls=false", username="hardcharger", password="change-me") as conn:
+    with conn.cursor() as cur:
+        cur.execute(operation="SELECT 42 AS answer, ? AS greeting", parameters=["hello"])
+        print(cur.fetch_arrow_table())
+```
+
+`hardcharger://host[:port]` is HTTPS; `?tls=false` is plain HTTP for development. See the
+[repository README](https://github.com/gizmodata/hardcharger-adbc#readme) for tags, settings,
+browser sign-in and the driver manifest.
+
+Apache License 2.0. Built by [GizmoData](https://gizmodata.com).

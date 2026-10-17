@@ -1,0 +1,35 @@
+# ADBC driver manifest for Hardcharger: `driver = "hardcharger"` in any ADBC driver manager.
+#
+# It loads the Warp SQL ADBC driver library (libadbc_driver_warpsql, from the adbc-driver-warpsql
+# wheel or a warp-sql-adbc release). With the Python package installed,
+# `python -m adbc_driver_hardcharger.manifest` writes this file with the path filled in.
+# By hand: replace @PREFIX@ with the library's directory and install as `hardcharger.toml` into
+#   Linux:   ~/.config/adbc/drivers/
+#   macOS:   ~/Library/Application Support/ADBC/Drivers/
+#   Windows: %LOCALAPPDATA%\ADBC\Drivers\
+# or a directory on ADBC_DRIVER_PATH.
+#
+# URIs given through the manifest are the Warp SQL driver's: warp://host:31337 (HTTPS), or
+# warp://host:31337?tls=false for plain HTTP. hardcharger:// is translated by the Python package.
+
+manifest_version = 1
+
+name = 'Hardcharger'
+version = '@VERSION@'
+publisher = 'GizmoData'
+license = 'Apache-2.0'
+url = 'https://github.com/gizmodata/hardcharger-adbc'
+
+[ADBC]
+version = '1.1.0'
+
+[Driver]
+entrypoint = 'AdbcDriverWarpsqlInit'
+
+[Driver.shared]
+linux_amd64 = '@PREFIX@/libadbc_driver_warpsql.so'
+linux_arm64 = '@PREFIX@/libadbc_driver_warpsql.so'
+macos_amd64 = '@PREFIX@/libadbc_driver_warpsql.dylib'
+macos_arm64 = '@PREFIX@/libadbc_driver_warpsql.dylib'
+windows_amd64 = '@PREFIX@\\libadbc_driver_warpsql.dll'
+windows_arm64 = '@PREFIX@\\libadbc_driver_warpsql.dll'

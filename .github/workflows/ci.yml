@@ -1,0 +1,143 @@
+name: ci
+
+# Lint, unit tests and the integration tests against a real hardcharger-server, on every push
+# and pull request; also the release gate (release.yml calls it on the tagged commit).
+#
+# Two internal repositories are read with the GIZMODATA_READ_TOKEN secret (a fine-grained token,
+# resource owner gizmodata, Contents: read-only on gizmodata/warp-sql-adbc and
+# gizmodata/hardcharger): the warp-sql-adbc submodule (adbc-driver-warpsql isn't on PyPI yet,
+# so its wheel is built here) and hardcharger-server from Hardcharger's GitHub Releases. This
+# repository's own GITHUB_TOKEN can't read other repositories. The token is never printed.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  # The server the integration tests run against (a gizmodata/hardcharger release).
+  HARDCHARGER_SERVER_VERSION: "0.2.0"
+
+jobs:
+  token:
+    name: read token
+    runs-on: ubuntu-24.04
+    steps:
+      - name: GIZMODATA_READ_TOKEN can read warp-sql-adbc and hardcharger's releases
+        env:
+          TOKEN: ${{ secrets.GIZMODATA_READ_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "::error::the GIZMODATA_READ_TOKEN secret is not set: a fine-grained token, resource owner gizmodata, Contents: read-only on gizmodata/warp-sql-adbc and gizmodata/hardcharger"
+            exit 1
+          fi
+          printf 'Authorization: Bearer %s\n' "$TOKEN" > "$RUNNER_TEMP/h"
+          for url in repos/gizmodata/warp-sql-adbc repos/gizmodata/hardcharger/releases/tags/v$HARDCHARGER_SERVER_VERSION; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H @"$RUNNER_TEMP/h" "https://api.github.com/$url")
+            if [ "$code" != 200 ]; then
+              rm -f "$RUNNER_TEMP/h"
+              echo "::error::GIZMODATA_READ_TOKEN can't read $url (HTTP $code)"
+              exit 1
+            fi
+          done
+          rm -f "$RUNNER_TEMP/h"
+
+  test:
+    name: tests (${{ matrix.platform }}, Python ${{ matrix.python }})
+    needs: token
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-amd64
+            python: "3.10"
+          - runner: ubuntu-24.04
+            platform: linux-amd64
+            python: "3.14"
+          - runner: macos-15
+            platform: macos-arm64
+            python: "3.14"
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch the warp-sql-adbc submodule
+        env:
+          TOKEN: ${{ secrets.GIZMODATA_READ_TOKEN }}
+        run: |
+          auth=$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth" \
+            submodule update --init --depth 1
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: third_party/warp-sql-adbc/go/go.mod
+          cache-dependency-path: third_party/warp-sql-adbc/go/go.sum
+      - uses: mlugg/setup-zig@v2
+        if: runner.os == 'Linux'
+        with:
+          version: 0.17.0
+      - uses: astral-sh/setup-uv@v10.3.0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Build adbc-driver-warpsql from the submodule
+        run: scripts/build_warpsql_wheel.sh
+
+      - name: Download hardcharger-server ${{ env.HARDCHARGER_SERVER_VERSION }}
+        env:
+          GH_TOKEN: ${{ secrets.GIZMODATA_READ_TOKEN }}
+        run: |
+          gh release download "v$HARDCHARGER_SERVER_VERSION" -R gizmodata/hardcharger \
+            -p "hardcharger-${{ matrix.platform }}.tar.gz" -D "$RUNNER_TEMP"
+          tar -C "$RUNNER_TEMP" -xzf "$RUNNER_TEMP/hardcharger-${{ matrix.platform }}.tar.gz"
+          binary="$RUNNER_TEMP/hardcharger-${{ matrix.platform }}/bin/hardcharger-server"
+          test "$("$binary" --version)" = "Hardcharger $HARDCHARGER_SERVER_VERSION"
+          echo "HARDCHARGER_ADBC_TEST_SERVER_BINARY=$binary" >> "$GITHUB_ENV"
+
+      - name: Install
+        working-directory: python
+        run: |
+          uv venv .venv --python "${{ matrix.python }}"
+          uv pip install --python .venv/bin/python --override ../build/overrides.txt -e ".[test,dev]"
+
+      - name: Lint
+        working-directory: python
+        run: |
+          .venv/bin/ruff check src tests
+          .venv/bin/ruff format --check src tests
+
+      # Unit and integration tests together; the integration tests fail without the server,
+      # and pytest exits 5 when nothing is collected.
+      - name: Tests
+        working-directory: python
+        run: .venv/bin/python -m pytest -v
+
+  package:
+    name: build and check the package
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: Build the wheel and sdist
+        run: uv build --out-dir dist python
+      - name: Check them
+        run: |
+          set -euo pipefail
+          uvx twine check --strict dist/*
+          # Pure Python, and the dependency is the published package, not a local wheel.
+          ls dist/adbc_driver_hardcharger-*-py3-none-any.whl
+          unzip -p dist/adbc_driver_hardcharger-*.whl '*/METADATA' > METADATA
+          grep -qx 'Requires-Dist: adbc-driver-warpsql<0.2,>=0.1.0' METADATA
+          if grep -q 'file://' METADATA; then echo "::error::a local path leaked into the metadata"; exit 1; fi

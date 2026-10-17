@@ -1,0 +1,12 @@
+build/
+dist/
+python/build/
+python/dist/
+*.egg-info/
+__pycache__/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.idea/
+.vscode/
+.DS_Store

@@ -1,0 +1,110 @@
+name: release
+
+# On a vX.Y.Z tag: the whole test suite (ci.yml) on the tagged commit, then the wheel and sdist,
+# a GitHub Release with the tag's CHANGELOG section, and PyPI. PyPI's trusted publisher for
+# adbc-driver-hardcharger names this repository, this file (release.yml) and the `pypi`
+# environment, which requires an approval and accepts only v* tags.
+#
+# workflow_dispatch runs the gate and the build only: the release and publish jobs need a tag.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Its own group: ci.yml, called below, takes `${{ github.workflow }}-${{ github.ref }}`, and in a
+# called workflow github.workflow is this workflow's name, so the same group would deadlock.
+concurrency:
+  group: release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  tests:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+    secrets: inherit
+
+  build:
+    needs: tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.0
+      - name: The tag matches the package version, and CHANGELOG.md has its section
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' python/src/adbc_driver_hardcharger/_version.py)
+          [ -n "$version" ] || { echo "::error::no __version__ in _version.py"; exit 1; }
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "::error::tag $GITHUB_REF_NAME != v$version"; exit 1; }
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          [ -s release-notes.md ] || { echo "::error::no CHANGELOG.md section for $version"; exit 1; }
+      - name: Build the wheel and sdist
+        run: |
+          set -euo pipefail
+          uv build --out-dir dist python
+          uvx twine check --strict dist/*
+          ls dist/adbc_driver_hardcharger-*-py3-none-any.whl dist/adbc_driver_hardcharger-*.tar.gz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-dist
+          path: |
+            dist/
+            release-notes.md
+          if-no-files-found: ignore
+
+  github-release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-dist
+      - uses: softprops/action-gh-release@v3
+        with:
+          body_path: release-notes.md
+          files: dist/*
+
+  pypi:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: pypi
+      url: https://pypi.org/p/adbc-driver-hardcharger
+    permissions:
+      id-token: write  # PyPI trusted publishing
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-dist
+      # Publishing before the Warp SQL driver is on PyPI would ship a package nobody can install.
+      - name: adbc-driver-warpsql that satisfies the dependency is on PyPI
+        run: |
+          python3 - <<'EOF'
+          import json, re, sys, urllib.request
+          try:
+              with urllib.request.urlopen("https://pypi.org/pypi/adbc-driver-warpsql/json", timeout=30) as r:
+                  releases = json.load(r)["releases"]
+          except Exception as error:
+              sys.exit(f"::error::adbc-driver-warpsql is not on PyPI ({error}): publish it first")
+          def key(v):  # final releases only: pip ignores pre-releases for >=0.1.0
+              return tuple(int(p) for p in v.split(".")) if re.fullmatch(r"\d+\.\d+\.\d+", v) else None
+          ok = [v for v, files in releases.items() if files and key(v) and (0, 1, 0) <= key(v) < (0, 2, 0)]
+          if not ok:
+              sys.exit("::error::no adbc-driver-warpsql release >=0.1.0,<0.2 on PyPI: publish it first")
+          print("adbc-driver-warpsql on PyPI:", ", ".join(sorted(ok)))
+          EOF
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: dist/
