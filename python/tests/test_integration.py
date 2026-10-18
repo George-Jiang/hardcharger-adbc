@@ -149,6 +149,134 @@ def test_tls_refuses_an_untrusted_certificate(tls_server):
     assert "certificate" in str(error.value)
 
 
+# --- client certificate sign-in (mutual TLS) -----------------------------------------------
+
+#: The administrator's identity as the server is configured with it; the certificate says
+#: ops@example.com (an e-mail identity matches ignoring case).
+OPS_IDENTITY = "OPS@example.com"
+
+
+@pytest.fixture(scope="module")
+def mtls_certs(tmp_path_factory):
+    return make_certificates(
+        out_dir=tmp_path_factory.mktemp("mtls-certs"),
+        clients={"ops": "ops@example.com", "stranger": "stranger@example.com"},
+    )
+
+
+def _mtls_args(certs) -> list[str]:
+    return [
+        "--tls-cert",
+        str(certs["cert"]),
+        "--tls-key",
+        str(certs["key"]),
+        "--mtls-ca-cert",
+        str(certs["ca"]),
+    ]
+
+
+@pytest.fixture(scope="module")
+def mtls_server(tmp_path_factory, mtls_certs):
+    server = start_server(
+        workdir=tmp_path_factory.mktemp("mtls"),
+        extra_args=[
+            *_mtls_args(certs=mtls_certs),
+            "--mtls-certificate-sign-in",
+            "--mtls-admin-identities",
+            OPS_IDENTITY,
+        ],
+    )
+    yield server
+    stop_server(server=server)
+
+
+def _certificate_connect(server, certs, client: str, auth_type: str = "client_certificate"):
+    return hardcharger.connect(
+        uri=server.uri,
+        auth_type=auth_type,
+        tls_root_certs=certs["ca"],
+        tls_client_cert=certs[client],
+        tls_client_key=certs[client + "-key"],
+    )
+
+
+@pytest.mark.parametrize(argnames="auth_type", argvalues=["client_certificate", "mtls"])
+def test_client_certificate_sign_in(mtls_server, mtls_certs, auth_type):
+    with _certificate_connect(
+        server=mtls_server, certs=mtls_certs, client="ops", auth_type=auth_type
+    ) as conn:
+        assert conn.current_user() == OPS_IDENTITY
+        with conn.cursor() as cur:
+            cur.execute(operation="SELECT auth_method FROM hardcharger_sessions() WHERE is_current")
+            assert cur.fetchone() == ("client_certificate",)
+
+
+def test_client_certificate_split_result_and_partitioned_ingest(mtls_server, mtls_certs):
+    # Partitions and ingest parts go over connections of their own, each presenting the
+    # certificate the token is bound to.
+    import pyarrow
+
+    with _certificate_connect(server=mtls_server, certs=mtls_certs, client="ops") as conn:
+        with conn.cursor() as cur:
+            cur.execute(operation="SELECT i FROM range(2000000) t(i) ORDER BY i")
+            assert cur.fetch_arrow_table().column(i=0).to_pylist() == list(range(2000000))
+            table = pyarrow.table(data={"k": list(range(100000))})
+            cur.adbc_ingest(
+                table_name="certificate_parts",
+                data=table.to_batches(max_chunksize=25000),
+                mode="create",
+            )
+            cur.execute(
+                operation="SELECT count(*), count(DISTINCT k), sum(k) FROM certificate_parts"
+            )
+            assert cur.fetchone() == (100000, 100000, 4999950000)
+
+
+def test_client_certificate_unknown_identity_is_refused(mtls_server, mtls_certs):
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+        _certificate_connect(server=mtls_server, certs=mtls_certs, client="stranger")
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.UNAUTHENTICATED
+    assert warp_code(error=error.value) == "unknown_certificate_identity"
+    assert "stranger@example.com" in str(error.value)
+
+
+def test_client_certificate_with_a_password_is_refused(mtls_server, mtls_certs):
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+        hardcharger.connect(
+            uri=mtls_server.uri,
+            auth_type="client_certificate",
+            username=USERNAME,
+            password=mtls_server.password,
+            tls_root_certs=mtls_certs["ca"],
+            tls_client_cert=mtls_certs["ops"],
+            tls_client_key=mtls_certs["ops-key"],
+        )
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.INVALID_ARGUMENT
+    assert "signs in with the client certificate alone" in str(error.value)
+
+
+def test_client_certificate_sign_in_off_on_the_server(tmp_path, mtls_certs):
+    # --mtls-ca-cert alone: the certificate only admits the connection.
+    server = start_server(workdir=tmp_path, extra_args=_mtls_args(certs=mtls_certs))
+    try:
+        with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+            _certificate_connect(server=server, certs=mtls_certs, client="ops")
+        assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.UNAUTHENTICATED
+        assert "capability mtls_identity" in str(error.value)
+        # The twin: a password sign-in over the same certificate.
+        with hardcharger.connect(
+            uri=server.uri,
+            username=USERNAME,
+            password=server.password,
+            tls_root_certs=mtls_certs["ca"],
+            tls_client_cert=mtls_certs["ops"],
+            tls_client_key=mtls_certs["ops-key"],
+        ) as conn:
+            assert conn.current_user() == USERNAME
+    finally:
+        stop_server(server=server)
+
+
 # --- settings ------------------------------------------------------------------------------
 
 

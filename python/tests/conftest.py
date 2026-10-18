@@ -91,6 +91,8 @@ def _wait_up(server: Server, timeout: float = 30) -> None:
             with urllib.request.urlopen(url=f"{server.base_url}/warp", timeout=2, context=context):
                 return
         except (urllib.error.URLError, OSError) as error:
+            if "CERTIFICATE_REQUIRED" in str(error):
+                return  # it requires client certificates and answered the handshake
             last_error = error
         time.sleep(0.1)
     stop_server(server=server)
@@ -173,8 +175,12 @@ def conn(hc_server):
         yield connection
 
 
-def make_certificates(out_dir: Path) -> dict[str, Path]:
-    """A throwaway CA, and a server certificate for 127.0.0.1/localhost it signed."""
+def make_certificates(out_dir: Path, clients: dict[str, str] | None = None) -> dict[str, Path]:
+    """A throwaway CA, and a server certificate for 127.0.0.1/localhost it signed.
+
+    ``clients`` maps a name to an e-mail address: for each, a client certificate whose identity
+    is that e-mail SAN, at ``paths[name]`` with its key at ``paths[name + "-key"]``.
+    """
     import ipaddress
 
     from cryptography import x509
@@ -199,6 +205,24 @@ def make_certificates(out_dir: Path) -> dict[str, Path]:
         .not_valid_before(time=now - datetime.timedelta(minutes=5))
         .not_valid_after(time=now + datetime.timedelta(days=1))
         .add_extension(extval=x509.BasicConstraints(ca=True, path_length=None), critical=True)
+        .add_extension(
+            extval=x509.KeyUsage(
+                digital_signature=True,
+                content_commitment=False,
+                key_encipherment=False,
+                data_encipherment=False,
+                key_agreement=False,
+                key_cert_sign=True,
+                crl_sign=True,
+                encipher_only=False,
+                decipher_only=False,
+            ),
+            critical=True,
+        )
+        .add_extension(
+            extval=x509.SubjectKeyIdentifier.from_public_key(public_key=ca_key.public_key()),
+            critical=False,
+        )
         .sign(private_key=ca_key, algorithm=hashes.SHA256())
     )
     server_key = ec.generate_private_key(curve=ec.SECP256R1())
@@ -235,4 +259,42 @@ def make_certificates(out_dir: Path) -> dict[str, Path]:
             encryption_algorithm=serialization.NoEncryption(),
         )
     )
+    for client, email in (clients or {}).items():
+        client_key = ec.generate_private_key(curve=ec.SECP256R1())
+        client_cert = (
+            x509.CertificateBuilder()
+            .subject_name(name=name(common_name=client))
+            .issuer_name(name=ca_cert.subject)
+            .public_key(key=client_key.public_key())
+            .serial_number(number=x509.random_serial_number())
+            .not_valid_before(time=now - datetime.timedelta(minutes=5))
+            .not_valid_after(time=now + datetime.timedelta(days=1))
+            .add_extension(
+                extval=x509.SubjectAlternativeName(general_names=[x509.RFC822Name(value=email)]),
+                critical=False,
+            )
+            .add_extension(
+                extval=x509.ExtendedKeyUsage(usages=[x509.oid.ExtendedKeyUsageOID.CLIENT_AUTH]),
+                critical=False,
+            )
+            .add_extension(
+                extval=x509.AuthorityKeyIdentifier.from_issuer_public_key(
+                    public_key=ca_key.public_key()
+                ),
+                critical=False,
+            )
+            .sign(private_key=ca_key, algorithm=hashes.SHA256())
+        )
+        paths[client] = out_dir / f"{client}.pem"
+        paths[client + "-key"] = out_dir / f"{client}-key.pem"
+        paths[client].write_bytes(
+            data=client_cert.public_bytes(encoding=serialization.Encoding.PEM)
+        )
+        paths[client + "-key"].write_bytes(
+            data=client_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
     return paths

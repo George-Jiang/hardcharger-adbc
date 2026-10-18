@@ -83,6 +83,20 @@ class TestConnectOptions:
             hardcharger.connect(uri="hardcharger://h", auth_type="oauth")
         mock_db.assert_not_called()
 
+    @pytest.mark.parametrize(argnames="spelling", argvalues=["client_certificate", "mtls"])
+    def test_client_certificate(self, mock_db, mock_conn, mock_cls, tmp_path, spelling):
+        cert, key = tmp_path / "client.pem", tmp_path / "client-key.pem"
+        cert.write_text(data=PEM)
+        key.write_text(data="-----BEGIN PRIVATE KEY-----\nkey\n-----END PRIVATE KEY-----\n")
+        hardcharger.connect(
+            uri="hardcharger://h", auth_type=spelling, tls_client_cert=cert, tls_client_key=key
+        )
+        kwargs = _db_kwargs(mock_db=mock_db)
+        assert kwargs["adbc.hardcharger.auth_type"] == "client_certificate"
+        assert kwargs["adbc.warp.tls.client_cert"] == PEM
+        assert kwargs["adbc.warp.tls.client_key"].startswith("-----BEGIN PRIVATE KEY-----")
+        assert "username" not in kwargs and "password" not in kwargs
+
     def test_external_auth_refuses_a_password(self, mock_db, mock_conn, mock_cls):
         with pytest.raises(expected_exception=ValueError, match="drop username, password"):
             hardcharger.connect(uri="hardcharger://h", auth_type="external", password="p")
@@ -136,6 +150,29 @@ class TestLibrary:
             assert db.get_option(key="adbc.hardcharger.query_tag") == '{"a":1}'
             assert db.get_option(key="adbc.hardcharger.oauth.port") == "4000"
 
+    def test_client_certificate_reaches_the_warp_sql_driver(self):
+        # Its checks run on auth_type=client_certificate: a password beside the certificate is
+        # refused before anything is sent.
+        with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+            adbc_driver_manager.AdbcDatabase(
+                driver=_driver_path(),
+                uri="hardcharger://127.0.0.1",
+                username="u",
+                password="p",
+                **{"adbc.hardcharger.auth_type": "client_certificate"},
+            )
+        assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.INVALID_ARGUMENT
+        assert "signs in with the client certificate alone; do not also set username" in str(
+            error.value
+        )
+        with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+            adbc_driver_manager.AdbcDatabase(
+                driver=_driver_path(),
+                uri="hardcharger://127.0.0.1",
+                **{"adbc.hardcharger.auth_type": "mtls"},
+            )
+        assert "needs a client certificate: set adbc.warp.tls.client_cert" in str(error.value)
+
     def test_plus_http_is_refused(self):
         with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
             adbc_driver_manager.AdbcDatabase(
@@ -147,7 +184,7 @@ class TestLibrary:
     @pytest.mark.parametrize(
         argnames=("key", "value", "text"),
         argvalues=[
-            ("adbc.hardcharger.auth_type", "oauth", "expected password or external"),
+            ("adbc.hardcharger.auth_type", "oauth", "expected password, external or client_cert"),
             ("adbc.hardcharger.setting.bad name", "1", "invalid Hardcharger setting name"),
             ("adbc.hardcharger.nope", "1", "unknown option"),
         ],

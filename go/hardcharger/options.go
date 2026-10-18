@@ -17,12 +17,22 @@ const (
 	optionPrefix = "adbc.hardcharger."
 
 	// OptionAuthType is "password" (the default; also for a pre-issued
-	// access token) or "external": sign in through the server's browser
+	// access token), "external": sign in through the server's browser
 	// sign-in (hardcharger-server --oauth-client-id), when the first
-	// connection opens.
-	OptionAuthType   = "adbc.hardcharger.auth_type"
-	AuthTypePassword = "password"
-	AuthTypeExternal = "external"
+	// connection opens, or "client_certificate" ("mtls"): sign in with the
+	// TLS client certificate alone (adbc.warp.tls.client_cert and
+	// adbc.warp.tls.client_key), no password; the server must run with
+	// --mtls-ca-cert and --mtls-certificate-sign-in. It is the Warp SQL
+	// driver's adbc.warp.auth.type, which does the sign-in, under
+	// Hardcharger's name.
+	OptionAuthType            = "adbc.hardcharger.auth_type"
+	AuthTypePassword          = "password"
+	AuthTypeExternal          = "external"
+	AuthTypeClientCertificate = "client_certificate"
+	// authTypeMTLS is accepted for client_certificate, as the hardcharger
+	// command-line client's --auth-type mtls.
+	authTypeMTLS = "mtls"
+	warpAuthType = "adbc.warp.auth.type"
 
 	// OptionOAuthURL is the browser sign-in server's base URL
 	// (hardcharger-server --oauth-base-url). Default: https://HOST:PORT, or
@@ -104,10 +114,15 @@ func settingName(name string) (string, error) {
 func (c *config) set(key, value string) error {
 	switch {
 	case key == OptionAuthType:
-		if value != AuthTypePassword && value != AuthTypeExternal {
-			return invalidArgument("invalid value %q for %s: expected password or external", value, key)
+		switch value {
+		case AuthTypePassword, AuthTypeExternal, AuthTypeClientCertificate:
+			c.authType = value
+		case authTypeMTLS:
+			c.authType = AuthTypeClientCertificate
+		default:
+			return invalidArgument("invalid value %q for %s: expected password, external or client_certificate (mtls)",
+				value, key)
 		}
-		c.authType = value
 	case key == OptionOAuthURL:
 		c.oauthURL = value
 	case key == OptionOAuthPort:
@@ -167,6 +182,16 @@ func (c *config) get(key string) (string, error) {
 		}
 	}
 	return "", adbc.Error{Code: adbc.StatusNotFound, Msg: "[hardcharger] option " + key + " is not set"}
+}
+
+// warpAuthTypeFor is the Warp SQL driver's adbc.warp.auth.type for an
+// auth_type: the browser sign-in ends in a token exchange, a password-style
+// sign-in to Warp SQL.
+func warpAuthTypeFor(authType string) string {
+	if authType == AuthTypeClientCertificate {
+		return AuthTypeClientCertificate
+	}
+	return AuthTypePassword
 }
 
 // sqlString quotes value as a SQL string literal.

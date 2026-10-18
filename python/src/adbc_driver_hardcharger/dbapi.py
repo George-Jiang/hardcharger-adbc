@@ -242,7 +242,7 @@ def connect(
     username: Optional[str] = None,
     password: Optional[str] = None,
     access_token: Optional[str] = None,
-    auth_type: Literal["password", "external"] = "password",
+    auth_type: Literal["password", "external", "client_certificate", "mtls"] = "password",
     oauth_url: Optional[str] = None,
     oauth_port: Optional[int] = None,
     oauth_timeout: Optional[float] = None,
@@ -270,8 +270,12 @@ def connect(
         username: User name for password sign-in.
         password: Password for password sign-in.
         access_token: A Hardcharger access token obtained elsewhere.
-        auth_type: ``"password"`` (default) or ``"external"``: sign in through the server's
-            browser sign-in (``hardcharger-server --oauth-client-id``).
+        auth_type: ``"password"`` (default); ``"external"``: sign in through the server's
+            browser sign-in (``hardcharger-server --oauth-client-id``); or
+            ``"client_certificate"`` (``"mtls"``): sign in with the TLS client certificate
+            (``tls_client_cert`` and ``tls_client_key``) and no password, on a server with
+            ``--mtls-ca-cert`` and ``--mtls-certificate-sign-in``. The token is bound to the
+            certificate.
         oauth_url: Base URL of the browser sign-in server (``--oauth-base-url``). Default:
             ``https://HOST:oauth_port``, or ``http://`` when the URI says ``?tls=false``.
         oauth_port: Port of the browser sign-in server (default 31339).
@@ -298,8 +302,13 @@ def connect(
     """
     if uri is None and profile is None:
         raise ValueError("Must provide at least one of 'uri' or 'profile'.")
-    if auth_type not in ("password", "external"):
-        raise ValueError(f"invalid auth_type {auth_type!r}: expected 'password' or 'external'")
+    if auth_type == "mtls":
+        auth_type = "client_certificate"
+    if auth_type not in ("password", "external", "client_certificate"):
+        raise ValueError(
+            f"invalid auth_type {auth_type!r}: expected 'password', 'external' or "
+            "'client_certificate' ('mtls')"
+        )
     if auth_type == "external" and (username or password or access_token):
         raise ValueError(
             "auth_type='external' signs in through the browser: drop username, password and "
@@ -322,8 +331,8 @@ def connect(
     put(key="username", value=username)
     put(key="password", value=password)
     put(key=options.ACCESS_TOKEN.value, value=access_token)
-    if auth_type == "external":
-        put(key=options.AUTH_TYPE.value, value="external")
+    if auth_type != "password":
+        put(key=options.AUTH_TYPE.value, value=auth_type)
     put(key=options.OAUTH_URL.value, value=oauth_url)
     put(key=options.OAUTH_PORT.value, value=None if oauth_port is None else str(oauth_port))
     put(

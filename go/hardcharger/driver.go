@@ -13,7 +13,8 @@
 //     vendor name, "Hardcharger", comes from the server);
 //
 //   - Hardcharger's options (adbc.hardcharger.*): session and query tags,
-//     hardcharger.* settings, and browser sign-in.
+//     hardcharger.* settings, browser sign-in, and client certificate
+//     sign-in (auth_type=client_certificate, the Warp SQL driver's).
 //
 //     drv := hardcharger.NewDriver(memory.DefaultAllocator)
 //     db, err := drv.NewDatabaseWithContext(ctx, map[string]string{
@@ -102,6 +103,11 @@ func (db *database) take(opts map[string]string) (map[string]string, error) {
 		switch {
 		case key == OptionIngestParts:
 			warpOpts[warpIngestParts] = value
+		case key == OptionAuthType:
+			if err := db.cfg.set(key, value); err != nil {
+				return nil, err
+			}
+			warpOpts[warpAuthType] = warpAuthTypeFor(db.cfg.authType)
 		case isHardchargerOption(key):
 			if err := db.cfg.set(key, value); err != nil {
 				return nil, err
@@ -130,10 +136,15 @@ func (db *database) SetOptions(ctx context.Context, opts map[string]string) erro
 	if err != nil {
 		return err
 	}
-	if len(warpOpts) == 0 {
-		return nil
+	// One at a time through SetOption: driverbase's SetOptions is
+	// DatabaseImplBase's, which knows none of the Warp SQL driver's options.
+	keys := slices.Sorted(maps.Keys(warpOpts))
+	for _, key := range keys {
+		if err := db.Database.SetOption(ctx, key, warpOpts[key]); err != nil {
+			return err
+		}
 	}
-	return db.Database.SetOptions(ctx, warpOpts)
+	return nil
 }
 
 func (db *database) GetOption(ctx context.Context, key string) (string, error) {

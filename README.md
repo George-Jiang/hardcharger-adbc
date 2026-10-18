@@ -34,12 +34,13 @@ every language at once:
 - 🏷️ **query and session tags**, recorded with every statement in Hardcharger's instrumentation;
 - ⚙️ **`hardcharger.*` settings**: set them for every session, or read, set and reset them on one;
 - 🌐 **browser sign-in** through the server's identity provider (SSO);
+- 🪪 **client certificate sign-in** (mutual TLS): the certificate is the credential, no password;
 - 🧾 **"ADBC Hardcharger Driver - Go"** as the driver name in GetInfo (the vendor name,
   "Hardcharger", comes from the server);
 - 🧩 **a driver manifest**, so `driver = "hardcharger"` finds it in any ADBC driver manager.
 
-> **Status: in development, unreleased (0.1.0).** Built on warp-sql-adbc `b3d2ab8`; tested
-> against `hardcharger-server` built from Hardcharger's main branch (`bced775`).
+> **Status: in development, unreleased (0.1.0).** Built on warp-sql-adbc `b74dfe2`; tested
+> against `hardcharger-server` built from Hardcharger's main branch (`ebe942f`).
 
 | Package | What it is |
 |---|---|
@@ -146,7 +147,7 @@ Hardcharger's own:
 | `adbc.hardcharger.setting.NAME` | database, connection | `SET SESSION hardcharger.NAME`: on every new session (database) or now (connection; `""` resets, and GetOption reads the value that applies) |
 | `adbc.hardcharger.global_setting.NAME` | connection | `SET GLOBAL hardcharger.NAME` (admins); `""` resets |
 | `adbc.hardcharger.ingest.parts` | database, connection | `adbc.warp.ingest.parts` under Hardcharger's name (on a statement, use the Warp SQL name) |
-| `adbc.hardcharger.auth_type` | database | `password` (default) or `external`: browser sign-in |
+| `adbc.hardcharger.auth_type` | database | `password` (default), `external` (browser sign-in), or `client_certificate` (also `mtls`): sign in with the client certificate alone; it is the Warp SQL driver's `adbc.warp.auth.type` |
 | `adbc.hardcharger.oauth.url` | database | The sign-in server's base URL (`--oauth-base-url`); default `https://HOST:31339` (`http://` with `?tls=false`) |
 | `adbc.hardcharger.oauth.port` | database | The sign-in server's port (default 31339) |
 | `adbc.hardcharger.oauth.timeout_seconds` | database | How long to wait for the sign-in (default 300) |
@@ -189,6 +190,47 @@ opens it in your browser, waits, and signs in to Warp SQL with the identity prov
 (token exchange). `open_browser=False` (option `oauth.browser=none`) prints the URL instead,
 for a remote shell; a string is the command to open it with. The sign-in server is reached
 over HTTPS when the connection is (no fallback to plain HTTP).
+
+## 🪪 Client certificate sign-in (mutual TLS)
+
+When the server verifies client certificates and lets them sign in (`--mtls-ca-cert` with
+`--mtls-certificate-sign-in`), the certificate is the credential: no user name or password.
+
+```bash
+HARDCHARGER_ADMIN_PASSWORD=change-me hardcharger-server --tls-cert server.pem --tls-key server-key.pem \
+  --mtls-ca-cert client-ca.pem --mtls-certificate-sign-in --mtls-admin-identities ops@example.com
+```
+
+```python
+with hardcharger.connect(uri="hardcharger://db.example.com", auth_type="client_certificate",
+                         tls_client_cert="client.pem", tls_client_key="client-key.pem",
+                         tls_root_certs="server-ca.pem") as conn:  # when the server's CA is private
+    print(conn.current_user())  # the certificate's identity: ops@example.com
+```
+
+In C, Go and every other language, set `adbc.hardcharger.auth_type` to `client_certificate`
+with the Warp SQL driver's `adbc.warp.tls.client_cert` and `adbc.warp.tls.client_key` (PEM
+text; `adbc.warp.tls.root_certs` too when the server's certificate comes from a private CA):
+
+```go
+db, err := hardcharger.NewDriver(memory.DefaultAllocator).NewDatabaseWithContext(ctx, map[string]string{
+	"uri":                      "hardcharger://db.example.com",
+	hardcharger.OptionAuthType: hardcharger.AuthTypeClientCertificate,
+	"adbc.warp.tls.client_cert": certPEM,
+	"adbc.warp.tls.client_key":  keyPEM,
+})
+```
+
+The identity is the certificate's e-mail SAN unless the server says otherwise
+(`--mtls-identity-source`); it must be one of `--mtls-admin-identities` or, under access
+control, a user of the store. The token the driver gets is bound to the certificate, and every
+connection it opens (result partitions, ingest parts) presents the same one. The driver refuses
+a user name, password or token beside `client_certificate`, a missing certificate or key, and
+plain HTTP before sending anything, and a server that doesn't offer certificate sign-in
+(capability `mtls_identity`) before trying it. The server's refusals carry its code in
+`warp.code`: `unknown_certificate_identity`, `certificate_mismatch` (a token bound to another
+certificate), `client_certificate_required`, `certificate_revoked`, and
+`certificate_identity_mismatch`.
 
 ## 🧩 Driver manifest
 

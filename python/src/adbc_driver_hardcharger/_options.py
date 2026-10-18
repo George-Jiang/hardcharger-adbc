@@ -8,7 +8,9 @@ class DatabaseOptions(enum.Enum):
     """Database options. The standard ``uri``, ``username`` and ``password``
     options and the ``adbc.telemetry.*`` options apply too."""
 
-    #: "password" (the default) or "external": browser sign-in when the first connection opens.
+    #: "password" (the default); "external": browser sign-in when the first connection opens;
+    #: or "client_certificate" ("mtls"): sign in with the TLS client certificate
+    #: (TLS_CLIENT_CERT and TLS_CLIENT_KEY) and no password (``adbc.warp.auth.type``).
     AUTH_TYPE = "adbc.hardcharger.auth_type"
     #: Base URL of the server's browser sign-in server (``--oauth-base-url``).
     OAUTH_URL = "adbc.hardcharger.oauth.url"

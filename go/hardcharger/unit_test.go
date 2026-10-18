@@ -4,8 +4,15 @@ package hardcharger
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -162,7 +169,7 @@ func TestDatabaseOptions(t *testing.T) {
 
 func TestBadDatabaseOptionsAreRefused(t *testing.T) {
 	for opts, text := range map[[2]string]string{
-		{OptionAuthType, "oauth"}:                              "expected password or external",
+		{OptionAuthType, "oauth"}:                              "expected password, external or client_certificate (mtls)",
 		{OptionOAuthPort, "0"}:                                 "expected a port number",
 		{OptionOAuthTimeoutSeconds, "soon"}:                    "expected a number of seconds",
 		{OptionSettingPrefix + "bad name", "1"}:                "invalid Hardcharger setting name",
@@ -200,7 +207,22 @@ func TestSetOptionAfterCreation(t *testing.T) {
 	if got, _ := db.GetOption(ctx, OptionQueryTag); got != `{"a":1}` {
 		t.Fatalf("query tag %q", got)
 	}
-	wantStatus(t, db.SetOption(ctx, OptionAuthType, "nope"), adbc.StatusInvalidArgument, "expected password or external")
+	wantStatus(t, db.SetOption(ctx, OptionAuthType, "nope"), adbc.StatusInvalidArgument, "expected password, external or client_certificate (mtls)")
+	// The Warp SQL driver's options reach it after creation too (driverbase's
+	// SetOptions refused them as unknown), and it validates them.
+	if err := db.SetOption(ctx, "adbc.warp.retry.max_attempts", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetOption(ctx, "adbc.warp.retry.max_attempts"); got != "3" {
+		t.Fatalf("max attempts %q", got)
+	}
+	if err := db.SetOptions(ctx, map[string]string{OptionIngestParts: "2", "adbc.warp.tls.skip_verify": "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetOption(ctx, "adbc.warp.tls.skip_verify"); got != "true" {
+		t.Fatalf("skip verify %q", got)
+	}
+	wantStatus(t, db.SetOption(ctx, "adbc.warp.retry.max_attempts", "zero"), adbc.StatusInvalidArgument, "adbc.warp.retry.max_attempts")
 }
 
 // fakeSignIn answers /oauth/initiate and then the polls with the queued answers.
@@ -350,5 +372,85 @@ func TestIngestPartsIsTheWarpOption(t *testing.T) {
 	}
 	if got, err := db.GetOption(ctx, "adbc.warp.statement.result_partitions"); err != nil || got != "8" {
 		t.Errorf("default result partitions %q, %v", got, err)
+	}
+}
+
+// selfSignedPEM is a throwaway client certificate and key, for options that
+// only need to parse.
+func selfSignedPEM(t *testing.T) (certPEM, keyPEM string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "unit"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		EmailAddresses: []string{"unit@example.com"}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyDER, _ := x509.MarshalPKCS8PrivateKey(key)
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}))
+}
+
+// auth_type=client_certificate is the Warp SQL driver's adbc.warp.auth.type:
+// the Warp SQL driver's own checks run on it (they need a certificate, TLS
+// and no password), so a refusal from it proves the option reached it.
+func TestClientCertificateAuthTypeIsTheWarpOption(t *testing.T) {
+	ctx := context.Background()
+	cert, key := selfSignedPEM(t)
+	withCertificate := func(extra map[string]string) map[string]string {
+		opts := map[string]string{adbc.OptionKeyURI: "hardcharger://h", OptionAuthType: AuthTypeClientCertificate,
+			"adbc.warp.tls.client_cert": cert, "adbc.warp.tls.client_key": key}
+		for k, v := range extra {
+			if v == "<unset>" {
+				delete(opts, k)
+			} else {
+				opts[k] = v
+			}
+		}
+		return opts
+	}
+	for name, tc := range map[string]struct {
+		opts map[string]string
+		text string
+	}{
+		"no certificate": {withCertificate(map[string]string{"adbc.warp.tls.client_cert": "<unset>",
+			"adbc.warp.tls.client_key": "<unset>"}), "needs a client certificate: set adbc.warp.tls.client_cert and adbc.warp.tls.client_key"},
+		"a password beside it": {withCertificate(map[string]string{adbc.OptionKeyUsername: "joe", adbc.OptionKeyPassword: "pw"}),
+			"signs in with the client certificate alone; do not also set username, password"},
+		"plain HTTP": {withCertificate(map[string]string{adbc.OptionKeyURI: "hardcharger://h?tls=false"}), "needs TLS"},
+	} {
+		_, err := newDB(t, tc.opts)
+		if err == nil {
+			t.Errorf("%s: accepted", name)
+			continue
+		}
+		wantStatus(t, err, adbc.StatusInvalidArgument, tc.text)
+	}
+	// The twin: certificate and key over TLS, under either spelling.
+	for _, spelling := range []string{AuthTypeClientCertificate, "mtls"} {
+		db, err := newDB(t, withCertificate(map[string]string{OptionAuthType: spelling}))
+		if err != nil {
+			t.Fatalf("%s: %v", spelling, err)
+		}
+		for _, k := range []string{OptionAuthType, warpAuthType} {
+			if got, err := db.GetOption(ctx, k); err != nil || got != AuthTypeClientCertificate {
+				t.Errorf("%s: GetOption(%s) = %q, %v", spelling, k, got, err)
+			}
+		}
+	}
+	// Back to a password: the Warp SQL driver is told too.
+	db, err := newDB(t, withCertificate(nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetOption(ctx, OptionAuthType, AuthTypePassword); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := db.GetOption(ctx, warpAuthType); got != AuthTypePassword {
+		t.Errorf("warp auth type %q after auth_type=password", got)
 	}
 }

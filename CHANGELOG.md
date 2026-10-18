@@ -6,12 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Client certificate sign-in (mutual TLS, Warp SQL §4.4): `adbc.hardcharger.auth_type=client_certificate`
+  (also `mtls`), Python `connect(auth_type="client_certificate", tls_client_cert=..., tls_client_key=...)`.
+  It is the Warp SQL driver's `adbc.warp.auth.type`: the certificate is the credential, the token is
+  bound to it, and result partitions and ingest parts present it too. Needs a server with
+  `--mtls-ca-cert` and `--mtls-certificate-sign-in`. Live tests in Go and Python against
+  `hardcharger-server`: sign-in (an e-mail identity matching `--mtls-admin-identities` ignoring
+  case), a split result and a partitioned ingest (row count, distinct keys and sum checked
+  exactly), an unknown identity (`unknown_certificate_identity`), a bound token over another
+  certificate (`certificate_mismatch`) and its twin, a password beside the certificate, and a server
+  with certificate sign-in off (capability `mtls_identity`) with its password twin.
+
 ### Changed
+
+- Built on warp-sql-adbc `b74dfe2` (client certificate sign-in), from `b3d2ab8`.
 
 - Python 3.11 is the minimum (`requires-python = ">=3.11"`): pyarrow 26, the floor,
   needs 3.11, so on 3.10 the package could never be installed.
 
 ### Fixed
+
+- In Go, Warp SQL options set on a database after it was created (`db.SetOption`,
+  `db.SetOptions`, e.g. `adbc.warp.retry.max_attempts`) were refused as unknown: they went to
+  driverbase's `SetOptions`, which knows none of them. They now reach the Warp SQL driver one by one.
+  (Options given at creation, and every option set through the C API or Python, were not affected.)
 
 - The `dbapi` module exports PEP 249's exception classes (`Error`, `Warning`, `InterfaceError`,
   `DatabaseError`, `DataError`, `OperationalError`, `IntegrityError`, `InternalError`,

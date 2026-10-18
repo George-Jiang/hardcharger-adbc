@@ -154,6 +154,9 @@ func launchServer(extraArgs []string) (*testServer, error) {
 			_ = resp.Body.Close()
 			return server, nil
 		}
+		if strings.Contains(err.Error(), "certificate required") {
+			return server, nil // it requires client certificates (--mtls-ca-cert), and answered the handshake
+		}
 		time.Sleep(100 * time.Millisecond)
 	}
 	server.stop()
