@@ -100,6 +100,8 @@ func (db *database) take(opts map[string]string) (map[string]string, error) {
 	for _, key := range keys {
 		value := opts[key]
 		switch {
+		case key == OptionIngestParts:
+			warpOpts[warpIngestParts] = value
 		case isHardchargerOption(key):
 			if err := db.cfg.set(key, value); err != nil {
 				return nil, err
@@ -138,6 +140,8 @@ func (db *database) GetOption(ctx context.Context, key string) (string, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 	switch {
+	case key == OptionIngestParts:
+		return db.Database.GetOption(ctx, warpIngestParts)
 	case isHardchargerOption(key):
 		return db.cfg.get(key)
 	case key == adbc.OptionKeyURI && db.uri != "":
@@ -219,6 +223,9 @@ func (c *connection) applyDefaults(ctx context.Context, cfg *config) error {
 }
 
 func (c *connection) SetOption(ctx context.Context, key, value string) error {
+	if key == OptionIngestParts {
+		key = warpIngestParts
+	}
 	name, global, err := connectionSetting(key)
 	if err != nil {
 		return err
@@ -230,6 +237,9 @@ func (c *connection) SetOption(ctx context.Context, key, value string) error {
 }
 
 func (c *connection) GetOption(ctx context.Context, key string) (string, error) {
+	if key == OptionIngestParts {
+		key = warpIngestParts
+	}
 	name, _, err := connectionSetting(key)
 	if err != nil {
 		return "", err

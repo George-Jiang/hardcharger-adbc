@@ -24,6 +24,9 @@ class DatabaseOptions(enum.Enum):
     QUERY_TAG = "adbc.hardcharger.query_tag"
     #: Prefix: ``SETTING_PREFIX + "query_timeout"`` sets hardcharger.query_timeout on every session.
     SETTING_PREFIX = "adbc.hardcharger.setting."
+    #: The most connections one bulk ingest is sent over at once (default 8; 1: one ordered
+    #: stream): ``adbc.warp.ingest.parts`` under Hardcharger's name. Also a connection option.
+    INGEST_PARTS = "adbc.hardcharger.ingest.parts"
 
     #: Do not verify the server's TLS certificate (development only).
     TLS_SKIP_VERIFY = "adbc.warp.tls.skip_verify"
@@ -56,6 +59,8 @@ class ConnectionOptions(enum.Enum):
     SETTING_PREFIX = "adbc.hardcharger.setting."
     #: Prefix: SET GLOBAL hardcharger.NAME, admins only ("" resets it).
     GLOBAL_SETTING_PREFIX = "adbc.hardcharger.global_setting."
+    #: The most connections one bulk ingest is sent over at once (``adbc.warp.ingest.parts``).
+    INGEST_PARTS = "adbc.hardcharger.ingest.parts"
 
     #: The connection's current server session id.
     SESSION_ID = "adbc.warp.session.id"
@@ -77,12 +82,17 @@ class StatementOptions(enum.Enum):
     QUERY_TAG = "adbc.warp.statement.query_tag"
     #: Arrow buffer compression for results and uploads: "zstd" or "none".
     IPC_COMPRESSION = "adbc.warp.ipc_compression"
-    #: The most partitions a result may be split into ("1", the default: never). A server
-    #: that offers it splits a large result, and the driver reads every partition at once,
-    #: each over its own connection.
+    #: The most partitions a result may be split into ("8", the default; "1": never). A
+    #: server that offers it splits a large result, and the driver reads every partition at
+    #: once, each over its own connection. A result of fewer than two batches comes as one
+    #: stream either way.
     RESULT_PARTITIONS = "adbc.warp.statement.result_partitions"
     #: "preserve" (the default): a split result comes back in order; "any": in whatever
     #: order its batches arrive.
     RESULT_ORDER = "adbc.warp.statement.result_order"
+    #: The most connections one bulk ingest is sent over at once ("8", the default; "1":
+    #: one stream). An upload of two batches or more is then a partitioned ingest, committed
+    #: as one; its rows land in no defined order, so set "1" to keep the upload's order.
+    INGEST_PARTS = "adbc.warp.ingest.parts"
     #: The id of the statement's last execution (read-only).
     STATEMENT_ID = "adbc.warp.statement.id"

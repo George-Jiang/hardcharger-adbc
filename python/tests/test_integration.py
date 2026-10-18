@@ -513,3 +513,107 @@ def test_a_prepared_settings_query_re_executes_with_new_parameters(conn):
                 parameters=[name],
             )
             assert cur.fetchall() == [(want,)], name
+
+
+# --- defaults inherited from the Warp SQL driver: split results and partitioned uploads ---------
+
+LARGE_RESULT = "SELECT i, i * 2 AS j FROM range(2000000) t(i)"
+
+
+def test_a_large_result_is_split_by_default(conn):
+    with conn.cursor() as cur:
+        partitions, _ = cur.adbc_execute_partitions(operation=LARGE_RESULT)
+    assert 2 <= len(partitions) <= 8, len(partitions)
+
+
+def test_one_result_partition_when_asked(hc_server):
+    with hardcharger.connect(
+        uri=hc_server.uri,
+        username=USERNAME,
+        password=hc_server.password,
+        db_kwargs={"adbc.warp.statement.result_partitions": "1"},
+    ) as conn:
+        with conn.cursor() as cur:
+            partitions, _ = cur.adbc_execute_partitions(operation=LARGE_RESULT)
+    assert len(partitions) == 1
+
+
+@pytest.fixture
+def proxied(hc_server, tmp_path):
+    """Connections through a recording proxy (its own process); yields (connect, requests)."""
+    log = tmp_path / "requests.log"
+    log.touch()
+    process = subprocess.Popen(
+        args=[
+            sys.executable,
+            str(pathlib.Path(__file__).with_name("recording_proxy.py")),
+            str(hc_server.port),
+            str(log),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    port = int(process.stdout.readline())
+
+    def connect(**kwargs):
+        return hardcharger.connect(
+            uri=f"hardcharger://127.0.0.1:{port}?tls=false",
+            username=USERNAME,
+            password=hc_server.password,
+            **kwargs,
+        )
+
+    def ingest_requests():
+        lines = log.read_text().splitlines()
+        single = sum(1 for r in lines if r.startswith("POST ") and r.endswith("/ingest"))
+        opens = sum(1 for r in lines if r.startswith("POST ") and r.endswith("/ingests"))
+        parts = sum(1 for r in lines if r.startswith("POST ") and "/parts/" in r)
+        return single, opens, parts
+
+    yield connect, ingest_requests
+    process.kill()
+    process.wait()
+
+
+def ingest_16_batches(conn, table: str) -> None:
+    import pyarrow as pa
+
+    batches = [
+        pa.record_batch(data={"k": pa.array(range(b * 5000, (b + 1) * 5000), type=pa.int64())})
+        for b in range(16)
+    ]
+    with conn.cursor() as cur:
+        rows = cur.adbc_ingest(
+            table_name=table,
+            data=pa.RecordBatchReader.from_batches(batches[0].schema, batches),
+            mode="create",
+        )
+        assert rows == 80000
+        cur.execute(operation=f"SELECT count(DISTINCT k) FROM {table}")
+        assert cur.fetchone() == (80000,)
+
+
+def test_an_ingest_goes_in_parts_by_default(proxied):
+    connect, ingest_requests = proxied
+    with connect() as conn:
+        ingest_16_batches(conn=conn, table="py_default_parts")
+    single, opens, parts = ingest_requests()
+    assert single == 0 and opens == 1 and 2 <= parts <= 8, (single, opens, parts)
+
+
+def test_one_ingest_part_when_asked_by_hardcharger_name(proxied):
+    connect, ingest_requests = proxied
+    with connect(db_kwargs={"adbc.hardcharger.ingest.parts": "1"}) as conn:
+        ingest_16_batches(conn=conn, table="py_one_part")
+    assert ingest_requests() == (1, 0, 0)
+
+
+def test_ingest_parts_by_warp_name_and_on_a_connection(proxied):
+    connect, ingest_requests = proxied
+    with connect(db_kwargs={"adbc.warp.ingest.parts": "2"}) as conn:
+        ingest_16_batches(conn=conn, table="py_two_parts")
+    assert ingest_requests() == (0, 1, 2)
+    with connect() as conn:
+        conn.adbc_connection.set_options(**{"adbc.hardcharger.ingest.parts": "3"})
+        ingest_16_batches(conn=conn, table="py_three_parts")
+    assert ingest_requests() == (0, 2, 5)

@@ -17,7 +17,7 @@ All notable changes to this project are documented here. The format follows
 ### Added
 
 - The Hardcharger ADBC driver: a Go package (`github.com/gizmodata/hardcharger-adbc/go/hardcharger`)
-  on the Warp SQL ADBC driver (warp-sql-adbc 33b29e9, `warpsql.NewDriverWithName`), compiled to the C shared library
+  on the Warp SQL ADBC driver (warp-sql-adbc b3d2ab8, `warpsql.NewDriverWithName`), compiled to the C shared library
   `libadbc_driver_hardcharger` (entry point `AdbcDriverHardchargerInit`), so every ADBC
   language gets:
   - `hardcharger://host[:port][/base-path][?tls=false]` URIs: Warp SQL's `warp://` with port
@@ -28,6 +28,11 @@ All notable changes to this project are documented here. The format follows
     on every session (database) or one (connection; read back with GetOption), global
     settings, and browser sign-in (`auth_type=external`, exchanging the identity provider's ID
     token for a Warp SQL access token).
+- The Warp SQL driver's defaults, inherited: a large result is split into up to 8 partitions
+  read at once (`adbc.warp.statement.result_partitions`), and a bulk ingest of two batches or
+  more goes in up to 8 parts (`adbc.warp.ingest.parts`, also `adbc.hardcharger.ingest.parts`
+  on the database or a connection). Tests count the partitions (`ExecutePartitions`) and the
+  ingest's part uploads (through a recording proxy), in Go and Python, each with a twin set to 1.
 - The driver manifest for `driver = "hardcharger"` (`packaging/hardcharger.toml.in`,
   `python -m adbc_driver_hardcharger.manifest`), and C and Go examples.
 - `adbc-driver-hardcharger`, the Python bindings: platform wheels carrying the library,

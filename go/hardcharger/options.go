@@ -49,6 +49,14 @@ const (
 	// (SET SESSION); an empty value resets it. On a connection, GetOption
 	// reads the value that applies to the session.
 	OptionSettingPrefix = "adbc.hardcharger.setting."
+	// OptionIngestParts is the Warp SQL driver's adbc.warp.ingest.parts under
+	// Hardcharger's name: the most connections one bulk ingest is sent over at
+	// once (default 8: an upload of two batches or more is a partitioned
+	// ingest; 1: one ordered stream). Database and connection; on a statement,
+	// set adbc.warp.ingest.parts.
+	OptionIngestParts = "adbc.hardcharger.ingest.parts"
+	warpIngestParts   = "adbc.warp.ingest.parts"
+
 	// OptionGlobalSettingPrefix + NAME sets the server-wide setting
 	// hardcharger.NAME (SET GLOBAL; admins only); an empty value resets it.
 	// Connections only.

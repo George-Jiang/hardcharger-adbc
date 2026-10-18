@@ -325,3 +325,30 @@ func TestOAuthTargetFollowsTheConnection(t *testing.T) {
 	_, err := oauthTargetFor(newConfig(), "warp://h:1", map[string]string{"adbc.warp.tls.root_certs": "not pem"})
 	wantStatus(t, err, adbc.StatusInvalidArgument, "holds no PEM certificate")
 }
+
+func TestIngestPartsIsTheWarpOption(t *testing.T) {
+	ctx := context.Background()
+	db, err := newDB(t, map[string]string{adbc.OptionKeyURI: "hardcharger://h", OptionIngestParts: "2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{OptionIngestParts, warpIngestParts} {
+		if got, err := db.GetOption(ctx, key); err != nil || got != "2" {
+			t.Errorf("GetOption(%s) = %q, %v", key, got, err)
+		}
+	}
+	// The Warp SQL driver validates it, under either name; the twin is above.
+	_, err = newDB(t, map[string]string{adbc.OptionKeyURI: "hardcharger://h", OptionIngestParts: "none"})
+	wantStatus(t, err, adbc.StatusInvalidArgument, warpIngestParts)
+	// Unset, it is the Warp SQL driver's default: 8.
+	db, err = newDB(t, map[string]string{adbc.OptionKeyURI: "hardcharger://h"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := db.GetOption(ctx, OptionIngestParts); err != nil || got != "8" {
+		t.Errorf("default ingest parts %q, %v", got, err)
+	}
+	if got, err := db.GetOption(ctx, "adbc.warp.statement.result_partitions"); err != nil || got != "8" {
+		t.Errorf("default result partitions %q, %v", got, err)
+	}
+}

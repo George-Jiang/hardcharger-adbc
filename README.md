@@ -24,8 +24,9 @@
 The [ADBC](https://arrow.apache.org/adbc/) driver for
 [Hardcharger](https://github.com/gizmodata/hardcharger), GizmoData's DuckDB 2.0 server. It is
 a native Go driver built on the generic [Warp SQL ADBC driver](https://github.com/gizmodata/warp-sql-adbc),
-which does the work (Arrow IPC streaming, bind parameters, bulk ingest, partitioned results,
-cancel, retries, TLS), compiled to one C shared library, `libadbc_driver_hardcharger`, that
+which does the work (Arrow IPC streaming, bind parameters, cancel, retries, TLS, and by
+default results split into up to 8 partitions read at once and bulk ingests sent in up to 8
+parts), compiled to one C shared library, `libadbc_driver_hardcharger`, that
 every ADBC language loads. On top of Warp SQL it adds what is particular to Hardcharger, for
 every language at once:
 
@@ -37,8 +38,8 @@ every language at once:
   "Hardcharger", comes from the server);
 - 🧩 **a driver manifest**, so `driver = "hardcharger"` finds it in any ADBC driver manager.
 
-> **Status: in development, unreleased (0.1.0).** Tested against `hardcharger-server` built
-> from Hardcharger's main branch.
+> **Status: in development, unreleased (0.1.0).** Built on warp-sql-adbc `b3d2ab8`; tested
+> against `hardcharger-server` built from Hardcharger's main branch (`bced775`).
 
 | Package | What it is |
 |---|---|
@@ -128,8 +129,15 @@ driver refuses `hardcharger+http://` with a message naming `?tls=false`.
 ## ⚙️ Options
 
 Every option of the [Warp SQL driver](https://github.com/gizmodata/warp-sql-adbc#%EF%B8%8F-options)
-(`adbc.warp.*`: TLS, tokens, retries, compression, partitioned results, ...) applies, with its
-defaults. Hardcharger's:
+(`adbc.warp.*`: TLS, tokens, retries, compression, ...) applies, with its defaults. Two shape
+throughput, and the driver keeps the Warp SQL driver's defaults:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `adbc.warp.statement.result_partitions` | 8 | A large result is split into up to this many partitions, read at once over their own connections (the server decides; a result of fewer than two batches is one stream). `1`: never split |
+| `adbc.warp.ingest.parts` (also `adbc.hardcharger.ingest.parts`) | 8 | A bulk ingest of two batches or more goes over up to this many connections, committed as one. Its rows land in no defined order; `1`: one stream, in the upload's order |
+
+Hardcharger's own:
 
 | Option | Where | Meaning |
 |---|---|---|
@@ -137,6 +145,7 @@ defaults. Hardcharger's:
 | `adbc.hardcharger.session_tag` | database, connection | A JSON object tagging the session (`hardcharger.session_tag`) |
 | `adbc.hardcharger.setting.NAME` | database, connection | `SET SESSION hardcharger.NAME`: on every new session (database) or now (connection; `""` resets, and GetOption reads the value that applies) |
 | `adbc.hardcharger.global_setting.NAME` | connection | `SET GLOBAL hardcharger.NAME` (admins); `""` resets |
+| `adbc.hardcharger.ingest.parts` | database, connection | `adbc.warp.ingest.parts` under Hardcharger's name (on a statement, use the Warp SQL name) |
 | `adbc.hardcharger.auth_type` | database | `password` (default) or `external`: browser sign-in |
 | `adbc.hardcharger.oauth.url` | database | The sign-in server's base URL (`--oauth-base-url`); default `https://HOST:31339` (`http://` with `?tls=false`) |
 | `adbc.hardcharger.oauth.port` | database | The sign-in server's port (default 31339) |
@@ -159,7 +168,7 @@ with hardcharger.connect(uri="hardcharger://localhost?tls=false", username="hard
     conn.reset_setting(name="query_timeout")
     conn.set_setting(name="max_concurrent_statements", value=8, scope="global")  # admins only
     conn.reset_setting(name="max_concurrent_statements", scope="global")
-    print(conn.current_user(), conn.server_version())
+    print(conn.current_user(), conn.server_version())          # e.g. hardcharger 0.2.0
     print(conn.settings())                                       # hardcharger_settings(), as Arrow
 ```
 
@@ -225,7 +234,9 @@ make -C go integration-test                # Go live suite (race detector)
 ```
 
 The live suites start real `hardcharger-server` processes on free loopback ports (plain HTTP,
-TLS, instrumentation, browser sign-in against a mock identity provider) and, in Python, load
+TLS, instrumentation, browser sign-in against a mock identity provider; the defaults: a large
+result arrives in several partitions and an ingest goes in several parts, counted through a
+recording proxy) and, in Python, load
 the library by manifest through the driver manager. Without a server binary they fail, never
 skip, and a Go run in which no live test ran fails too. CI also builds the ADBC C driver
 manager and runs the C and Go examples against a server on the default port. CI's server is
