@@ -27,14 +27,27 @@ import adbc_driver_manager
 from adbc_driver_manager.dbapi import Connection as _BaseConnection
 from adbc_driver_manager.dbapi import Cursor as _BaseCursor
 
-# Re-export the DB-API 2.0 module globals and type constructors.
+# Re-export the DB-API 2.0 module globals, type constructors and exceptions (PEP 249: a
+# driver's module exposes Error, Warning and the rest). They are the driver manager's own
+# classes, so `except dbapi.ProgrammingError` and `except adbc_driver_manager.ProgrammingError`
+# catch the same errors.
 from adbc_driver_manager.dbapi import (  # noqa: F401
+    DatabaseError,
+    DataError,
     Date,
     DateFromTicks,
+    Error,
+    IntegrityError,
+    InterfaceError,
+    InternalError,
+    NotSupportedError,
+    OperationalError,
+    ProgrammingError,
     Time,
     TimeFromTicks,
     Timestamp,
     TimestampFromTicks,
+    Warning,
     apilevel,
     paramstyle,
     threadsafety,
@@ -218,7 +231,7 @@ class Connection(_BaseConnection):
         return self._scalar(sql="SELECT CAST(HARDCHARGER_CURRENT_SESSION() AS VARCHAR)")
 
     def server_version(self) -> str:
-        """The server's version, e.g. ``v0.2.0`` (``HARDCHARGER_VERSION()``)."""
+        """The server's version, e.g. ``0.2.0`` (``HARDCHARGER_VERSION()``)."""
         return self._scalar(sql="SELECT HARDCHARGER_VERSION()")
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -59,7 +60,11 @@ def test_the_server_reports_itself_as_hardcharger(conn):
 def test_connection_helpers(conn):
     assert isinstance(conn, hardcharger.Connection)
     assert conn.current_user() == USERNAME
-    assert conn.server_version().startswith("v")
+    # The plain semantic version, as hardcharger-server --version prints it ("0.2.0"); servers
+    # built before the docs-findings fixes still answer "v0.2.0".
+    assert re.fullmatch(r"v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", conn.server_version()), (
+        conn.server_version()
+    )
     assert len(conn.current_session()) == 36
 
 
