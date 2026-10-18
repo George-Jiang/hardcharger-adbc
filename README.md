@@ -219,7 +219,7 @@ packaging/           the driver manifest template
 
 ## 🛠️ Building and testing
 
-Go 1.27 with cgo (and, on Linux, `zig` for the glibc 2.17 build), Python 3.10+. The Warp SQL
+Go 1.27 with cgo (and, on Linux, `zig` for the glibc 2.17 build), Python 3.11+. The Warp SQL
 driver is a Go module in an internal repository until launch:
 `GOPRIVATE=github.com/gizmodata/*` with git access to `gizmodata/warp-sql-adbc`.
 
