@@ -1,6 +1,6 @@
 <p align="center">
   <a href="https://github.com/gizmodata/hardcharger">
-    <img src="docs/assets/hardcharger-adbc-banner.svg" alt="Hardcharger ADBC: one native driver for every ADBC language. By GizmoData." width="100%">
+    <img src="docs/assets/hardcharger-adbc-banner.svg" alt="Hardcharger™ ADBC: one native driver for every ADBC language. By GizmoData™." width="100%">
   </a>
 </p>
 
@@ -12,7 +12,7 @@
   <img src="https://img.shields.io/badge/bindings-Python-3776AB.svg?logo=python&logoColor=white" alt="Python bindings">
   <a href="https://github.com/gizmodata/hardcharger"><img src="https://img.shields.io/badge/server-Hardcharger-f15a24.svg" alt="Hardcharger"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg" alt="Apache 2.0 license"></a>
-  <a href="https://gizmodata.com"><img src="https://img.shields.io/badge/by-GizmoData-f15a24.svg" alt="GizmoData"></a>
+  <a href="https://gizmodata.com"><img src="https://img.shields.io/badge/by-GizmoData%E2%84%A2-f15a24.svg" alt="GizmoData™"></a>
 </p>
 
 <h3 align="center">Query Hardcharger from Python, C/C++, Go, R, Rust or any ADBC language.</h3>
@@ -22,7 +22,7 @@
 ## 🔌 What is it?
 
 The [ADBC](https://arrow.apache.org/adbc/) driver for
-[Hardcharger](https://github.com/gizmodata/hardcharger), GizmoData's DuckDB 2.0 server. It is
+[Hardcharger™](https://github.com/gizmodata/hardcharger), GizmoData™'s DuckDB 2.0 server. It is
 a native Go driver built on the generic [Warp SQL ADBC driver](https://github.com/gizmodata/warp-sql-adbc),
 which does the work (Arrow IPC streaming, bind parameters, cancel, retries, TLS, and by
 default results split into up to 8 partitions read at once and bulk ingests sent in up to 8
@@ -301,6 +301,8 @@ Apache License 2.0; see [LICENSE](LICENSE).
 ---
 
 <p align="center">
-  <a href="https://gizmodata.com"><img src="docs/assets/gizmodata-logo.png" alt="GizmoData" width="56"></a><br>
-  <sub>Built by <a href="https://gizmodata.com">GizmoData</a></sub>
+  <a href="https://gizmodata.com"><img src="docs/assets/gizmodata-logo.png" alt="GizmoData™" width="56"></a><br>
+  <sub>Built by <a href="https://gizmodata.com">GizmoData™</a></sub>
 </p>
+
+<p align="center"><sub>Hardcharger™ and GizmoData™ are trademarks of GizmoData LLC.</sub></p>

@@ -14,7 +14,7 @@ version = { attr = "adbc_driver_hardcharger._version.__version__" }
 [project]
 name = "adbc-driver-hardcharger"
 dynamic = ["version"]
-description = "ADBC driver for Hardcharger, GizmoData's DuckDB 2.0 server: a native Go driver with Python bindings"
+description = "ADBC driver for Hardcharger™, GizmoData™'s DuckDB 2.0 server: a native Go driver with Python bindings"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"  # pyarrow 26 needs 3.11

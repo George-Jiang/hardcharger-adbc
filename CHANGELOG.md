@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Documentation
+
+- Trademark notices: Hardcharger™ and GizmoData™ on the README titles and first mentions, package
+  metadata and the footer, which says both are trademarks of GizmoData LLC.
+
 ### Added
 
 - Client certificate sign-in (mutual TLS, Warp SQL §4.4): `adbc.hardcharger.auth_type=client_certificate`

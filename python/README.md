@@ -1,7 +1,7 @@
 # adbc-driver-hardcharger
 
 The [ADBC](https://arrow.apache.org/adbc/) driver for
-[Hardcharger](https://github.com/gizmodata/hardcharger), GizmoData's DuckDB 2.0 server: a
+[Hardcharger™](https://github.com/gizmodata/hardcharger), GizmoData™'s DuckDB 2.0 server: a
 native Go driver (built on the [Warp SQL ADBC driver](https://github.com/gizmodata/warp-sql-adbc))
 whose library ships in this wheel, with Python DB-API bindings. `hardcharger://` URIs (port
 31337 by default), query and session tags, `hardcharger.*` settings, browser sign-in, and an
