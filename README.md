@@ -150,8 +150,6 @@ Hardcharger's own:
 | `adbc.hardcharger.global_setting.NAME` | connection | `SET GLOBAL hardcharger.NAME` (admins); `""` resets |
 | `adbc.hardcharger.ingest.parts` | database, connection | `adbc.warp.ingest.parts` under Hardcharger's name (on a statement, use the Warp SQL name) |
 | `adbc.hardcharger.auth_type` | database | `password` (default), `external` (browser sign-in), or `client_certificate` (also `mtls`): sign in with the client certificate alone; it is the Warp SQL driver's `adbc.warp.auth.type` |
-| `adbc.hardcharger.oauth.url` | database | The sign-in server's base URL (`--oauth-base-url`); default `https://HOST:31339` (`http://` with `?tls=false`) |
-| `adbc.hardcharger.oauth.port` | database | The sign-in server's port (default 31339) |
 | `adbc.hardcharger.oauth.timeout_seconds` | database | How long to wait for the sign-in (default 300) |
 | `adbc.hardcharger.oauth.browser` | database | Command that opens the sign-in page (the URL is appended); default `$HARDCHARGER_BROWSER`, else the system's; `none` prints the URL |
 | `adbc.hardcharger.oauth.share_sign_in` | database | `true`: share one browser sign-in among this process's databases that sign in to the same server (see [below](#one-sign-in-for-many-connections)); default `false` |
@@ -181,27 +179,30 @@ They map to the options above, so they behave exactly as in C or Go.
 
 ## 🌐 Browser sign-in (SSO)
 
-When the server runs its browser sign-in (`--oauth-client-id`, `--oauth-client-secret`,
-`--oauth-port`, with the identity provider in `--token-allowed-issuer`), sign in as yourself:
+When the server offers browser sign-in (`--oauth-client-id` and `--oauth-client-secret`, with
+the identity provider in `--token-allowed-issuer`; it then lists the Warp SQL capability
+`oauth_browser`), sign in as yourself:
 
 ```python
 with hardcharger.connect(uri="hardcharger://db.example.com", auth_type="external") as conn:
     print(conn.current_user())  # the e-mail address you signed in with
 ```
 
-When the first connection opens, the driver asks the server's sign-in server for a sign-in,
-opens it in your browser, waits, and signs in to Warp SQL with the identity provider's ID token
-(token exchange). `open_browser=False` (option `oauth.browser=none`) prints the URL instead,
-for a remote shell; a string is the command to open it with. The sign-in server is reached
-over HTTPS when the connection is (no fallback to plain HTTP).
+When the first connection opens, the driver asks the server for a sign-in flow (Warp SQL's
+browser sign-in, on the server's own port and URL: nothing else to configure on the client),
+opens the identity provider's page in your browser, waits, and receives the server's own
+access token. The identity provider's settings stay on the server. `open_browser=False`
+(option `oauth.browser=none`) prints the URL instead, for a remote shell; a string is the
+command to open it with. The token can't be renewed: when it expires, open a new connection
+and sign in again.
 
 ### One sign-in for many connections
 
 Each database signs in on its own, and the DB-API's `connect()` makes a database per
 connection, so a program that opens several connections (dbt, a pool, a notebook) would open a
 browser window for each. `share_sign_in=True` (option `adbc.hardcharger.oauth.share_sign_in`)
-shares one sign-in among the process's databases that sign in to the same server, through the
-same sign-in server, with the same TLS trust:
+shares one sign-in among the process's databases that sign in to the same server, with the same
+TLS trust:
 
 ```python
 for model in ("orders", "customers", "rollups"):
@@ -210,10 +211,9 @@ for model in ("orders", "customers", "rollups"):
         ...
 ```
 
-The first connection signs in (others opened meanwhile wait for it); the rest reuse its ID
-token, each exchanging it for an access token of its own, until shortly before the ID token
-expires (a minute, or a quarter of a shorter lifetime), when the next connection signs in
-again. A shared token the server refuses is dropped and that connection signs in again, once.
+The first connection signs in (others opened meanwhile wait for it); the rest reuse the
+server's access token it got, until shortly before it expires (a minute, or a quarter of a
+shorter lifetime), when the next connection signs in again. A shared token the server refuses is dropped and that connection signs in again, once.
 The token lives only in the process's memory and never goes to another server. To sign in as
 two people (or roles) to one server in one process, give each its own key:
 `share_sign_in="alice"` (option `adbc.hardcharger.oauth.sign_in_key`). In Go,

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -28,7 +29,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/gizmodata/warp-sql-adbc/go/warpsql"
 )
 
 func insecureTransport() *http.Transport {
@@ -283,14 +285,21 @@ const (
 	oauthSecret   = "hardcharger-adbc-secret"
 )
 
-// mockIdP is a small OpenID Connect provider: discovery, a JWKS, and a token
-// endpoint that trades validCode for a signed ID token naming email.
+// mockIdP is a small OpenID Connect provider: discovery, a JWKS, an
+// authorization endpoint that sends the browser straight back to the
+// server's callback with a code (as after a sign-in), and a token endpoint
+// that trades a "code-ok…" code for a signed ID token naming email, once,
+// checking the client, the redirect URI and PKCE (S256), with the request's
+// nonce.
 type mockIdP struct {
-	server    *httptest.Server
-	key       *rsa.PrivateKey
-	validCode string
-	email     string
-	lifetime  atomic.Int64 // of the ID tokens it signs, in seconds
+	server *httptest.Server
+	key    *rsa.PrivateKey
+	email  string
+
+	mu       sync.Mutex
+	issue    string                // the prefix of the next code it hands out
+	requests map[string]url.Values // code -> its authorization request
+	codes    int
 }
 
 func newMockIdP(t *testing.T) *mockIdP {
@@ -298,8 +307,7 @@ func newMockIdP(t *testing.T) *mockIdP {
 	if err != nil {
 		t.Fatal(err)
 	}
-	idp := &mockIdP{key: key, validCode: "code-ok", email: "analyst@gizmodata.com"}
-	idp.lifetime.Store(300)
+	idp := &mockIdP{key: key, email: "analyst@gizmodata.com", issue: "code-ok", requests: map[string]url.Values{}}
 	idp.server = httptest.NewUnstartedServer(http.HandlerFunc(idp.serve))
 	idp.server.Start() // after the assignment: the handler reads idp.server
 	t.Cleanup(idp.server.Close)
@@ -313,64 +321,92 @@ func (idp *mockIdP) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(body)
 	}
 	issuer := idp.server.URL
+	b64 := base64.RawURLEncoding.EncodeToString
 	switch r.URL.Path {
 	case "/.well-known/openid-configuration":
 		reply(200, map[string]string{"issuer": issuer, "jwks_uri": issuer + "/jwks",
 			"authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token"})
 	case "/jwks":
-		b64 := base64.RawURLEncoding.EncodeToString
 		reply(200, map[string]any{"keys": []map[string]string{{"kty": "RSA", "kid": "k1", "alg": "RS256", "use": "sig",
 			"n": b64(idp.key.N.Bytes()), "e": b64(big.NewInt(int64(idp.key.E)).Bytes())}}})
+	case "/authorize":
+		q := r.URL.Query()
+		if q.Get("client_id") != oauthClientID || q.Get("response_type") != "code" ||
+			q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" {
+			reply(400, map[string]string{"error": "invalid_request"})
+			return
+		}
+		idp.mu.Lock()
+		idp.codes++
+		code := fmt.Sprintf("%s-%d", idp.issue, idp.codes)
+		idp.requests[code] = q
+		idp.mu.Unlock()
+		back := url.Values{"code": {code}, "state": {q.Get("state")}}
+		http.Redirect(w, r, q.Get("redirect_uri")+"?"+back.Encode(), http.StatusFound)
 	case "/token":
 		_ = r.ParseForm()
-		if r.Form.Get("client_id") != oauthClientID || r.Form.Get("client_secret") != oauthSecret {
+		code := r.Form.Get("code")
+		idp.mu.Lock()
+		request, known := idp.requests[code]
+		delete(idp.requests, code)
+		idp.mu.Unlock()
+		verifier := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
+		switch {
+		case r.Form.Get("client_id") != oauthClientID || r.Form.Get("client_secret") != oauthSecret:
 			reply(401, map[string]string{"error": "invalid_client"})
-		} else if r.Form.Get("code") != idp.validCode {
+		case !known || !strings.HasPrefix(code, "code-ok") || request.Get("redirect_uri") != r.Form.Get("redirect_uri"):
 			reply(400, map[string]string{"error": "invalid_grant", "error_description": "the code is not valid"})
-		} else {
-			reply(200, map[string]string{"access_token": "unused", "token_type": "Bearer", "id_token": idp.idToken()})
+		case b64(verifier[:]) != request.Get("code_challenge"):
+			reply(400, map[string]string{"error": "invalid_grant", "error_description": "PKCE verification failed"})
+		default:
+			reply(200, map[string]string{"access_token": "unused", "token_type": "Bearer",
+				"id_token": idp.idToken(request.Get("nonce"))})
 		}
 	default:
 		reply(404, map[string]string{"error": "not_found"})
 	}
 }
 
-func (idp *mockIdP) idToken() string {
+func (idp *mockIdP) idToken(nonce string) string {
 	b64 := func(v any) string { data, _ := json.Marshal(v); return base64.RawURLEncoding.EncodeToString(data) }
 	now := time.Now().Unix()
 	unsigned := b64(map[string]string{"alg": "RS256", "kid": "k1", "typ": "JWT"}) + "." + b64(map[string]any{
-		"iss": idp.server.URL, "aud": oauthAudience, "sub": idp.email, "email": idp.email, "iat": now, "exp": now + idp.lifetime.Load()})
+		"iss": idp.server.URL, "aud": oauthAudience, "sub": idp.email, "email": idp.email, "nonce": nonce,
+		"iat": now, "exp": now + 300})
 	digest := sha256.Sum256([]byte(unsigned))
 	signature, _ := rsa.SignPKCS1v15(rand.Reader, idp.key, crypto.SHA256, digest[:])
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
-func startOAuthServer(t *testing.T, idp *mockIdP) *testServer {
-	port, err := freePort()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return startServer(t, "--token-allowed-issuer", idp.server.URL, "--token-allowed-audience", oauthAudience,
+// startOAuthServer starts a Hardcharger with browser sign-in through idp, its
+// redirect URI on its own port, and extra flags.
+func startOAuthServer(t *testing.T, idp *mockIdP, extra ...string) *testServer {
+	return startServer(t, append([]string{"--token-allowed-issuer", idp.server.URL, "--token-allowed-audience", oauthAudience,
 		"--token-default-role", "admin", "--token-authorized-emails", "*@gizmodata.com",
-		"--oauth-client-id", oauthClientID, "--oauth-client-secret", oauthSecret, "--oauth-port", strconv.Itoa(port))
+		"--oauth-client-id", oauthClientID, "--oauth-client-secret", oauthSecret,
+		"--oauth-base-url", "{base_url}"}, extra...)...)
 }
 
-// browserThatSignsIn stands in for the user's browser: the identity provider
-// sends it back to the server's callback with code, as after a sign-in.
-func browserThatSignsIn(t *testing.T, server *testServer, code string) {
+// browserThatSignsIn stands in for the user's browser: it opens the authorize
+// URL, and the identity provider sends it back to the server's callback with
+// a code starting with code ("code-ok": one the provider then accepts).
+func browserThatSignsIn(t *testing.T, idp *mockIdP, code string) {
+	idp.mu.Lock()
+	idp.issue = code
+	idp.mu.Unlock()
 	saved := openBrowser
-	openBrowser = func(_ string, authURL string) error {
-		parsed, err := url.Parse(authURL)
-		if err != nil {
-			return err
+	openBrowser = func(string) warpsql.BrowserOpener {
+		return func(ctx context.Context, authURL string) error {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, authURL, nil)
+			if err != nil {
+				return err
+			}
+			resp, err := http.DefaultClient.Do(req) // follows the provider back to the callback
+			if err != nil {
+				return err
+			}
+			return resp.Body.Close()
 		}
-		callback := "http://127.0.0.1:" + strconv.Itoa(server.oauthPort) + "/oauth/callback?" +
-			url.Values{"code": {code}, "state": {parsed.Query().Get("state")}}.Encode()
-		resp, err := http.Get(callback)
-		if err != nil {
-			return err
-		}
-		return resp.Body.Close()
 	}
 	t.Cleanup(func() { openBrowser = saved })
 }
@@ -378,9 +414,9 @@ func browserThatSignsIn(t *testing.T, server *testServer, code string) {
 func TestIntegrationBrowserSignIn(t *testing.T) {
 	idp := newMockIdP(t)
 	server := startOAuthServer(t, idp)
-	browserThatSignsIn(t, server, "code-ok")
-	cnxn := mustOpen(t, server, map[string]string{adbc.OptionKeyUsername: "<unset>", adbc.OptionKeyPassword: "<unset>",
-		OptionAuthType: AuthTypeExternal, OptionOAuthPort: strconv.Itoa(server.oauthPort)})
+	browserThatSignsIn(t, idp, "code-ok")
+	cnxn := mustOpen(t, server, map[string]string{adbc.OptionKeyUsername: "", adbc.OptionKeyPassword: "",
+		OptionAuthType: AuthTypeExternal})
 	if got := scalar(t, cnxn, "SELECT HARDCHARGER_USER()"); got != idp.email {
 		t.Fatalf("signed in as %s", got)
 	}
@@ -389,12 +425,43 @@ func TestIntegrationBrowserSignIn(t *testing.T) {
 func TestIntegrationBrowserSignInWithARejectedCode(t *testing.T) {
 	idp := newMockIdP(t)
 	server := startOAuthServer(t, idp)
-	browserThatSignsIn(t, server, "code-bad")
-	_, _, err := open(t, server, map[string]string{adbc.OptionKeyUsername: "<unset>", adbc.OptionKeyPassword: "<unset>",
-		OptionAuthType: AuthTypeExternal, OptionOAuthURL: "http://127.0.0.1:" + strconv.Itoa(server.oauthPort)})
-	wantStatus(t, err, adbc.StatusUnauthenticated, "the sign-in failed")
-	if !strings.Contains(err.Error(), "invalid_grant") {
+	browserThatSignsIn(t, idp, "code-bad")
+	_, _, err := open(t, server, map[string]string{adbc.OptionKeyUsername: "", adbc.OptionKeyPassword: "",
+		OptionAuthType: AuthTypeExternal})
+	wantStatus(t, err, adbc.StatusUnauthenticated, "invalid_grant")
+	if !strings.Contains(err.Error(), "identity_provider_error") {
 		t.Fatalf("error %v", err)
+	}
+}
+
+// A user the server does not authorize: the flow fails with the server's
+// reason, and no session opens.
+func TestIntegrationBrowserSignInForAnUnauthorizedUser(t *testing.T) {
+	idp := newMockIdP(t)
+	idp.email = "mallory@evil.com"
+	server := startOAuthServer(t, idp)
+	browserThatSignsIn(t, idp, "code-ok")
+	_, _, err := open(t, server, map[string]string{adbc.OptionKeyUsername: "", adbc.OptionKeyPassword: "",
+		OptionAuthType: AuthTypeExternal})
+	wantStatus(t, err, adbc.StatusUnauthenticated, "mallory@evil.com")
+	if !strings.Contains(err.Error(), "invalid_credentials") {
+		t.Fatalf("error %v", err)
+	}
+}
+
+// A server without browser sign-in: refused before any flow, and no browser opens.
+func TestIntegrationBrowserSignInNeedsTheServersCapability(t *testing.T) {
+	opened := false
+	saved := openBrowser
+	openBrowser = func(string) warpsql.BrowserOpener {
+		return func(context.Context, string) error { opened = true; return nil }
+	}
+	t.Cleanup(func() { openBrowser = saved })
+	_, _, err := open(t, shared, map[string]string{adbc.OptionKeyUsername: "", adbc.OptionKeyPassword: "",
+		OptionAuthType: AuthTypeExternal})
+	wantStatus(t, err, adbc.StatusUnauthenticated, "does not offer browser sign-in")
+	if opened {
+		t.Fatal("a browser was opened")
 	}
 }
 

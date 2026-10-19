@@ -30,10 +30,10 @@ import (
 	"context"
 	"errors"
 	"maps"
-	"os"
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/adbc-drivers/driverbase-go/driverbase"
 	"github.com/apache/arrow-adbc/go/adbc"
@@ -46,8 +46,9 @@ import (
 // DriverName is what GetInfo reports as the driver name.
 const DriverName = "ADBC Hardcharger Driver - Go"
 
-// optionSubjectToken is the Warp SQL driver's token-exchange option.
-const optionSubjectToken = "adbc.warp.auth.subject_token"
+// optionAccessToken is the Warp SQL driver's option for a token issued
+// elsewhere: here, the server's own token from a browser sign-in.
+const optionAccessToken = "adbc.warp.auth.access_token"
 
 // NewDriver returns the Hardcharger ADBC driver.
 func NewDriver(alloc memory.Allocator) driverbase.Driver {
@@ -208,21 +209,15 @@ func (db *database) signIn(ctx context.Context) error {
 		return nil
 	}
 	warpOptions := maps.Clone(db.warpOptions)
-	target, err := oauthTargetFor(db.cfg, db.warpURI, warpOptions)
-	if err != nil {
-		return err
-	}
-	browser := db.cfg.browser
-	if browser == "" {
-		browser = os.Getenv("HARDCHARGER_BROWSER")
-	}
-	run := func(ctx context.Context) (string, error) {
-		return browserSignIn(ctx, target, browser, db.cfg.oauthTimeout)
+	warpOptions[adbc.OptionKeyURI] = db.warpURI
+	run := func(ctx context.Context) (string, time.Duration, error) {
+		return browserSignIn(ctx, warpOptions, db.cfg.browser, db.cfg.oauthTimeout)
 	}
 	var token string
+	var err error
 	db.shared, db.sharedToken = nil, ""
 	if db.cfg.shareSignIn {
-		shared := sharedSignInFor(signInKeyFor(db.warpURI, target, warpOptions, db.cfg.signInKey))
+		shared := sharedSignInFor(signInKeyFor(db.warpURI, warpOptions, db.cfg.signInKey))
 		var fresh bool
 		if token, fresh, err = shared.get(ctx, run); err != nil {
 			return err
@@ -230,10 +225,10 @@ func (db *database) signIn(ctx context.Context) error {
 		if !fresh {
 			db.shared, db.sharedToken = shared, token
 		}
-	} else if token, err = run(ctx); err != nil {
+	} else if token, _, err = run(ctx); err != nil {
 		return err
 	}
-	if err := db.Database.SetOption(ctx, optionSubjectToken, token); err != nil {
+	if err := db.Database.SetOption(ctx, optionAccessToken, token); err != nil {
 		return err
 	}
 	db.signedIn = true

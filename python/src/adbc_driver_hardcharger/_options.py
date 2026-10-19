@@ -8,20 +8,17 @@ class DatabaseOptions(enum.Enum):
     """Database options. The standard ``uri``, ``username`` and ``password``
     options and the ``adbc.telemetry.*`` options apply too."""
 
-    #: "password" (the default); "external": browser sign-in when the first connection opens;
+    #: "password" (the default); "external": sign in through a browser with the server's
+    #: identity provider when the first connection opens (on the server's own port);
     #: or "client_certificate" ("mtls"): sign in with the TLS client certificate
     #: (TLS_CLIENT_CERT and TLS_CLIENT_KEY) and no password (``adbc.warp.auth.type``).
     AUTH_TYPE = "adbc.hardcharger.auth_type"
-    #: Base URL of the server's browser sign-in server (``--oauth-base-url``).
-    OAUTH_URL = "adbc.hardcharger.oauth.url"
-    #: Port of the browser sign-in server (default 31339).
-    OAUTH_PORT = "adbc.hardcharger.oauth.port"
     #: Seconds to wait for the browser sign-in (default 300).
     OAUTH_TIMEOUT_SECONDS = "adbc.hardcharger.oauth.timeout_seconds"
     #: Command that opens the sign-in page (URL appended); "none" prints the URL instead.
     OAUTH_BROWSER = "adbc.hardcharger.oauth.browser"
     #: "true": share one browser sign-in among this process's databases that sign in to the
-    #: same server (same sign-in server, TLS trust and SIGN_IN_KEY); "false" (the default):
+    #: same server (same TLS trust and SIGN_IN_KEY); "false" (the default):
     #: each database signs in on its own.
     OAUTH_SHARE_SIGN_IN = "adbc.hardcharger.oauth.share_sign_in"
     #: Names a shared sign-in (default ""): databases share one only when their keys match.
@@ -46,7 +43,7 @@ class DatabaseOptions(enum.Enum):
     TLS_CLIENT_KEY = "adbc.warp.tls.client_key"
     #: Host name the server certificate is checked against, instead of the URI's.
     TLS_SERVER_NAME = "adbc.warp.tls.server_name"
-    #: A Warp SQL access token obtained elsewhere (used as is, never renewed).
+    #: A Warp SQL access token obtained elsewhere (used as is, never renewed by the driver).
     ACCESS_TOKEN = "adbc.warp.auth.access_token"
     #: An identity provider's token, exchanged for an access token.
     SUBJECT_TOKEN = "adbc.warp.auth.subject_token"

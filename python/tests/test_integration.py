@@ -14,7 +14,7 @@ import pytest
 
 from adbc_driver_hardcharger import dbapi as hardcharger
 from adbc_driver_hardcharger import manifest
-from conftest import USERNAME, free_port, make_certificates, start_server, stop_server
+from conftest import USERNAME, make_certificates, start_server, stop_server
 
 pytestmark = pytest.mark.integration
 
@@ -65,7 +65,10 @@ def test_connection_helpers(conn):
     assert re.fullmatch(r"v?\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?", conn.server_version()), (
         conn.server_version()
     )
-    assert len(conn.current_session()) == 36
+    # The session's own id (the Warp SQL one, s_..., from Hardcharger 0.4.0; a UUID before).
+    assert re.fullmatch(r"s_[a-z2-7]{32}|[0-9a-f-]{36}", conn.current_session()), (
+        conn.current_session()
+    )
 
 
 def test_wrong_password_is_refused(hc_server):
@@ -482,7 +485,6 @@ class IdP:
     """The mock identity provider, running in its own process (see mock_idp.py)."""
 
     email = "analyst@gizmodata.com"
-    valid_code = "code-ok"
 
     def __init__(self, issuer: str, process: subprocess.Popen):
         self.issuer = issuer
@@ -513,10 +515,8 @@ def idp():
 
 @pytest.fixture(scope="module")
 def oauth_server(tmp_path_factory, idp):
-    oauth_port = free_port()
     server = start_server(
         workdir=tmp_path_factory.mktemp("oauth"),
-        oauth_port=oauth_port,
         extra_args=[
             "--token-allowed-issuer",
             idp.issuer,
@@ -530,8 +530,9 @@ def oauth_server(tmp_path_factory, idp):
             CLIENT_ID,
             "--oauth-client-secret",
             CLIENT_SECRET,
-            "--oauth-port",
-            str(oauth_port),
+            # The redirect URI on the server's own port, dialled at 127.0.0.1.
+            "--oauth-base-url",
+            "{base_url}",
         ],
     )
     yield server
@@ -542,7 +543,7 @@ FAKE_BROWSER = f"{sys.executable} {pathlib.Path(__file__).with_name('fake_browse
 
 
 def browser(code: str) -> str:
-    """The fake browser command, handing ``code`` to the server's callback."""
+    """The fake browser command: the identity provider sends it back with ``code``."""
     return f"{FAKE_BROWSER} {code}"
 
 
@@ -550,7 +551,6 @@ def test_browser_sign_in(oauth_server, idp):
     with hardcharger.connect(
         uri=oauth_server.uri,
         auth_type="external",
-        oauth_port=oauth_server.oauth_port,
         open_browser=browser(code="code-ok"),
         oauth_timeout=30,
     ) as conn:
@@ -565,24 +565,21 @@ def test_browser_sign_in_with_a_rejected_code(oauth_server, idp):
         hardcharger.connect(
             uri=oauth_server.uri,
             auth_type="external",
-            oauth_port=oauth_server.oauth_port,
             open_browser=browser(code="code-bad"),
             oauth_timeout=30,
         )
     assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.UNAUTHENTICATED
-    assert "browser sign-in: the sign-in failed" in str(error.value)
+    assert "browser sign-in" in str(error.value)
     assert "invalid_grant" in str(error.value)
+    assert "identity_provider_error" in str(error.value)
 
 
-def test_browser_sign_in_with_an_explicit_oauth_url(oauth_server, idp):
-    with hardcharger.connect(
-        uri=oauth_server.uri,
-        auth_type="external",
-        oauth_url=f"http://127.0.0.1:{oauth_server.oauth_port}",
-        open_browser=browser(code="code-ok"),
-        oauth_timeout=30,
-    ) as conn:
-        assert conn.current_user() == idp.email
+def test_browser_sign_in_needs_the_servers_capability(hc_server):
+    """A server without browser sign-in: refused before any flow, saying why."""
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+        hardcharger.connect(uri=hc_server.uri, auth_type="external", open_browser=False)
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.UNAUTHENTICATED
+    assert "does not offer browser sign-in" in str(error.value)
 
 
 class SignInCounter:
@@ -601,7 +598,6 @@ def _shared_connect(server, counter: SignInCounter, share_sign_in):
     return hardcharger.connect(
         uri=server.uri,
         auth_type="external",
-        oauth_port=server.oauth_port,
         open_browser=counter.command,
         oauth_timeout=30,
         share_sign_in=share_sign_in,

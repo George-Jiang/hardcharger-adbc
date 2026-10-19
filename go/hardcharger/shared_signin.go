@@ -5,9 +5,7 @@ package hardcharger
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"net/url"
 	"strings"
@@ -18,24 +16,22 @@ import (
 )
 
 // A shared browser sign-in: with OptionOAuthShareSignIn, the databases of one
-// process that sign in through the browser to the same server, through the same
-// sign-in server, with the same TLS trust and the same OptionOAuthSignInKey,
-// share one sign-in. The first to open a connection runs it (the others wait
-// for it); the rest reuse its ID token, each exchanging it for an access token
-// of its own, until the token is close to its expiry ("exp"), when the next
-// database to open runs a new sign-in. A shared token that the server refuses
+// process that sign in through the browser to the same server, with the same
+// TLS trust and the same OptionOAuthSignInKey, share one sign-in. The first to open a connection runs it (the others wait
+// for it); the rest reuse the server's access token it yielded, until the token
+// is close to its expiry (its expires_in), when the next database to open runs
+// a new sign-in. A shared token that the server refuses
 // is forgotten, and that database signs in again (once). Tokens never cross
 // servers or sign-in keys, and live only in this process's memory.
 
-// sharedSignInMargin is how long before its expiry a shared ID token stops
-// being handed out (at most; a quarter of a shorter lifetime), so that the
-// exchange that follows still finds it valid.
+// sharedSignInMargin is how long before its expiry a shared token stops being
+// handed out (at most; a quarter of a shorter lifetime), so that a database
+// that takes it still has time to use it.
 const sharedSignInMargin = time.Minute
 
 // signInKey says which databases may share a sign-in.
 type signInKey struct {
 	server string // the Warp SQL server: scheme, host, port and base path
-	oauth  string // the sign-in server's base URL
 	trust  string // the TLS trust (root certificates, skip_verify, server name)
 	label  string // OptionOAuthSignInKey
 }
@@ -77,10 +73,11 @@ func sharedSignInFor(key signInKey) *sharedSignIn {
 	return entry
 }
 
-// get returns the key's ID token, running signIn when there is none that is
-// still good. fresh reports that this call signed in. Concurrent callers wait
-// for one sign-in, or until ctx ends.
-func (s *sharedSignIn) get(ctx context.Context, signIn func(context.Context) (string, error)) (token string, fresh bool, err error) {
+// get returns the key's access token, running signIn when there is none that
+// is still good. fresh reports that this call signed in. Concurrent callers
+// wait for one sign-in, or until ctx ends.
+func (s *sharedSignIn) get(ctx context.Context,
+	signIn func(context.Context) (string, time.Duration, error)) (token string, fresh bool, err error) {
 	select {
 	case s.running <- struct{}{}:
 	case <-ctx.Done():
@@ -94,12 +91,12 @@ func (s *sharedSignIn) get(ctx context.Context, signIn func(context.Context) (st
 	if token := s.current(time.Now()); token != "" {
 		return token, false, nil
 	}
-	token, err = signIn(ctx)
+	token, lifetime, err := signIn(ctx)
 	if err != nil {
 		return "", false, err
 	}
 	s.mu.Lock()
-	s.token, s.renewAt = token, renewTime(token, time.Now())
+	s.token, s.renewAt = token, renewTime(lifetime, time.Now())
 	s.mu.Unlock()
 	return token, true, nil
 }
@@ -123,39 +120,18 @@ func (s *sharedSignIn) forget(token string) {
 	}
 }
 
-// renewTime is when a token signed in at now stops being shared: its expiry
-// ("exp") less a margin. It is zero when the token is not a JWT with an
-// expiry; such a token is shared until the server refuses it.
-func renewTime(token string, now time.Time) time.Time {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
+// renewTime is when a token with this lifetime, issued at now, stops being
+// shared: its expiry less a margin. It is zero for an unknown lifetime; such a
+// token is shared until the server refuses it.
+func renewTime(lifetime time.Duration, now time.Time) time.Time {
+	if lifetime <= 0 {
 		return time.Time{}
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
-	if err != nil {
-		return time.Time{}
-	}
-	var claims struct {
-		Exp float64 `json:"exp"`
-		Iat float64 `json:"iat"`
-	}
-	if json.Unmarshal(payload, &claims) != nil || claims.Exp <= 0 {
-		return time.Time{}
-	}
-	expires := time.Unix(0, int64(claims.Exp*float64(time.Second)))
-	issued := now
-	if claims.Iat > 0 {
-		issued = time.Unix(0, int64(claims.Iat*float64(time.Second)))
-	}
-	margin := sharedSignInMargin
-	if lifetime := expires.Sub(issued); lifetime > 0 {
-		margin = min(margin, lifetime/4)
-	}
-	return expires.Add(-margin)
+	return now.Add(lifetime - min(sharedSignInMargin, lifetime/4))
 }
 
 // signInKeyFor is the key of a database's browser sign-in.
-func signInKeyFor(warpURI string, target oauthTarget, warpOptions map[string]string, label string) signInKey {
+func signInKeyFor(warpURI string, warpOptions map[string]string, label string) signInKey {
 	server := warpURI
 	if u, err := url.Parse(warpURI); err == nil {
 		tls := "tls"
@@ -168,5 +144,5 @@ func signInKeyFor(warpURI string, target oauthTarget, warpOptions map[string]str
 	for _, option := range []string{"adbc.warp.tls.root_certs", "adbc.warp.tls.skip_verify", "adbc.warp.tls.server_name"} {
 		trust.Write([]byte(option + "=" + warpOptions[option] + "\x00"))
 	}
-	return signInKey{server: server, oauth: target.baseURL, trust: hex.EncodeToString(trust.Sum(nil)), label: label}
+	return signInKey{server: server, trust: hex.EncodeToString(trust.Sum(nil)), label: label}
 }

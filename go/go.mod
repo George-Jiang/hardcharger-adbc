@@ -6,7 +6,7 @@ require (
 	github.com/adbc-drivers/driverbase-go/driverbase v0.0.0-20261015034256-4c82882827b5
 	github.com/apache/arrow-adbc/go/adbc v1.12.0
 	github.com/apache/arrow-go/v18 v18.8.0
-	github.com/gizmodata/warp-sql-adbc/go v0.0.0-20261019134247-56483f55f6ab
+	github.com/gizmodata/warp-sql-adbc/go v0.0.0-20261019184123-6ee3a7363700
 	go.uber.org/goleak v1.3.0
 )
 

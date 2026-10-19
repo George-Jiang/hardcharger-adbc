@@ -17,9 +17,9 @@ const (
 	optionPrefix = "adbc.hardcharger."
 
 	// OptionAuthType is "password" (the default; also for a pre-issued
-	// access token), "external": sign in through the server's browser
-	// sign-in (hardcharger-server --oauth-client-id), when the first
-	// connection opens, or "client_certificate" ("mtls"): sign in with the
+	// access token), "external": sign in through a browser with the server's
+	// identity provider (Warp SQL browser sign-in on the server's own port;
+	// hardcharger-server --oauth-client-id), when the first connection opens, or "client_certificate" ("mtls"): sign in with the
 	// TLS client certificate alone (adbc.warp.tls.client_cert and
 	// adbc.warp.tls.client_key), no password; the server must run with
 	// --mtls-ca-cert and --mtls-certificate-sign-in. It is the Warp SQL
@@ -34,12 +34,6 @@ const (
 	authTypeMTLS = "mtls"
 	warpAuthType = "adbc.warp.auth.type"
 
-	// OptionOAuthURL is the browser sign-in server's base URL
-	// (hardcharger-server --oauth-base-url). Default: https://HOST:PORT, or
-	// http:// when the connection is plain HTTP.
-	OptionOAuthURL = "adbc.hardcharger.oauth.url"
-	// OptionOAuthPort is the browser sign-in server's port (default 31339).
-	OptionOAuthPort = "adbc.hardcharger.oauth.port"
 	// OptionOAuthTimeoutSeconds is how long to wait for the user to sign in
 	// (default 300).
 	OptionOAuthTimeoutSeconds = "adbc.hardcharger.oauth.timeout_seconds"
@@ -50,10 +44,10 @@ const (
 	OptionOAuthBrowser = "adbc.hardcharger.oauth.browser"
 	// OptionOAuthShareSignIn ("true"/"false", default "false"): share one
 	// browser sign-in among the databases of this process that sign in to the
-	// same server, through the same sign-in server, with the same TLS trust and
-	// OptionOAuthSignInKey. The first to open a connection signs in (the others
-	// wait for it); the rest reuse its ID token until shortly before it
-	// expires, then the next one signs in again. A shared token the server
+	// same server, with the same TLS trust and OptionOAuthSignInKey. The first
+	// to open a connection signs in (the others wait for it); the rest reuse
+	// its access token until shortly before it expires, then the next one
+	// signs in again. A shared token the server
 	// refuses is dropped and that database signs in again. For applications
 	// that open a database per connection (dbt, pools, the Python DB-API's
 	// connect()), which would otherwise open a browser window for each.
@@ -100,8 +94,6 @@ type setting struct {
 // config holds a database's Hardcharger options.
 type config struct {
 	authType     string
-	oauthURL     string
-	oauthPort    int
 	oauthTimeout time.Duration
 	browser      string
 	shareSignIn  bool
@@ -112,7 +104,7 @@ type config struct {
 }
 
 func newConfig() *config {
-	return &config{authType: AuthTypePassword, oauthPort: DefaultOAuthPort, oauthTimeout: defaultOAuthTimeout}
+	return &config{authType: AuthTypePassword, oauthTimeout: defaultOAuthTimeout}
 }
 
 func isHardchargerOption(key string) bool { return strings.HasPrefix(key, optionPrefix) }
@@ -140,14 +132,6 @@ func (c *config) set(key, value string) error {
 			return invalidArgument("invalid value %q for %s: expected password, external or client_certificate (mtls)",
 				value, key)
 		}
-	case key == OptionOAuthURL:
-		c.oauthURL = value
-	case key == OptionOAuthPort:
-		port, err := strconv.Atoi(value)
-		if err != nil || port < 1 || port > 65535 {
-			return invalidArgument("invalid value %q for %s: expected a port number", value, key)
-		}
-		c.oauthPort = port
 	case key == OptionOAuthTimeoutSeconds:
 		seconds, err := strconv.ParseFloat(value, 64)
 		if err != nil || seconds <= 0 {
@@ -189,10 +173,6 @@ func (c *config) get(key string) (string, error) {
 	switch {
 	case key == OptionAuthType:
 		return c.authType, nil
-	case key == OptionOAuthURL:
-		return c.oauthURL, nil
-	case key == OptionOAuthPort:
-		return strconv.Itoa(c.oauthPort), nil
 	case key == OptionOAuthTimeoutSeconds:
 		return strconv.FormatFloat(c.oauthTimeout.Seconds(), 'g', -1, 64), nil
 	case key == OptionOAuthBrowser:
@@ -217,8 +197,8 @@ func (c *config) get(key string) (string, error) {
 }
 
 // warpAuthTypeFor is the Warp SQL driver's adbc.warp.auth.type for an
-// auth_type: the browser sign-in ends in a token exchange, a password-style
-// sign-in to Warp SQL.
+// auth_type: a browser sign-in here hands the Warp SQL driver the server's
+// access token, which it uses as a token issued elsewhere.
 func warpAuthTypeFor(authType string) string {
 	if authType == AuthTypeClientCertificate {
 		return AuthTypeClientCertificate

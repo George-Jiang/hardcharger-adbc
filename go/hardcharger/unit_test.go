@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/gizmodata/warp-sql-adbc/go/warpsql"
 )
 
 func TestToWarpURI(t *testing.T) {
@@ -135,12 +137,11 @@ func newDB(t *testing.T, opts map[string]string) (*database, error) {
 func TestDatabaseOptions(t *testing.T) {
 	ctx := context.Background()
 	db, err := newDB(t, map[string]string{
-		adbc.OptionKeyURI:                     "hardcharger://h?tls=false",
-		OptionAuthType:                        AuthTypeExternal,
-		OptionOAuthPort:                       "4000",
-		OptionOAuthTimeoutSeconds:             "2.5",
-		OptionQueryTag:                        `{"job":"x"}`,
-		OptionSettingPrefix + "query_timeout": "30",
+		adbc.OptionKeyURI:                                "hardcharger://h?tls=false",
+		OptionAuthType:                                   AuthTypeExternal,
+		OptionOAuthTimeoutSeconds:                        "2.5",
+		OptionQueryTag:                                   `{"job":"x"}`,
+		OptionSettingPrefix + "query_timeout":            "30",
 		OptionSettingPrefix + "hardcharger.bypass_queue": "true",
 	})
 	if err != nil {
@@ -149,7 +150,6 @@ func TestDatabaseOptions(t *testing.T) {
 	for key, want := range map[string]string{
 		adbc.OptionKeyURI:                     "hardcharger://h?tls=false",
 		OptionAuthType:                        AuthTypeExternal,
-		OptionOAuthPort:                       "4000",
 		OptionOAuthTimeoutSeconds:             "2.5",
 		OptionQueryTag:                        `{"job":"x"}`,
 		OptionSettingPrefix + "query_timeout": "30",
@@ -170,7 +170,6 @@ func TestDatabaseOptions(t *testing.T) {
 func TestBadDatabaseOptionsAreRefused(t *testing.T) {
 	for opts, text := range map[[2]string]string{
 		{OptionAuthType, "oauth"}:                              "expected password, external or client_certificate (mtls)",
-		{OptionOAuthPort, "0"}:                                 "expected a port number",
 		{OptionOAuthTimeoutSeconds, "soon"}:                    "expected a number of seconds",
 		{OptionSettingPrefix + "bad name", "1"}:                "invalid Hardcharger setting name",
 		{OptionGlobalSettingPrefix + "graceful_shutdown", "1"}: "is a connection option",
@@ -184,7 +183,7 @@ func TestBadDatabaseOptionsAreRefused(t *testing.T) {
 	}
 	// The twin: the same keys with good values.
 	if _, err := newDB(t, map[string]string{adbc.OptionKeyURI: "hardcharger://h", OptionAuthType: AuthTypePassword,
-		OptionOAuthPort: "31339", OptionSettingPrefix + "query_timeout": "1"}); err != nil {
+		OptionOAuthTimeoutSeconds: "30", OptionSettingPrefix + "query_timeout": "1"}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -225,12 +224,16 @@ func TestSetOptionAfterCreation(t *testing.T) {
 	wantStatus(t, db.SetOption(ctx, "adbc.warp.retry.max_attempts", "zero"), adbc.StatusInvalidArgument, "adbc.warp.retry.max_attempts")
 }
 
-// fakeSignIn answers /oauth/initiate and then the polls with the queued answers.
+// fakeSignIn is a Warp SQL server with browser sign-in (spec §4.3): discovery,
+// a flow, and polls answered from the queued answers (a pending flow after
+// them). A poll without the flow's secret gets 404 flow_not_found.
 type fakeSignIn struct {
 	mu       sync.Mutex
 	polls    []fakeAnswer
-	initiate *fakeAnswer
+	offer    bool
 	requests []string
+	secrets  []string
+	sessions []string // the Authorization of each session created
 	server   *httptest.Server
 }
 
@@ -239,113 +242,212 @@ type fakeAnswer struct {
 	body   map[string]any
 }
 
+const fakePollSecret = "fake-poll-secret"
+
 func newFakeSignIn(t *testing.T, polls ...fakeAnswer) *fakeSignIn {
-	f := &fakeSignIn{polls: polls}
+	f := &fakeSignIn{polls: polls, offer: true}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		f.requests = append(f.requests, r.URL.Path)
-		answer := fakeAnswer{http.StatusOK, map[string]any{"status": "pending"}}
-		switch {
-		case r.URL.Path == "/oauth/initiate" && f.initiate != nil:
-			answer = *f.initiate
-		case r.URL.Path == "/oauth/initiate":
-			answer = fakeAnswer{http.StatusOK, map[string]any{"session_uuid": "u-1", "auth_url": "http://idp/authorize?state=s"}}
-		case len(f.polls) > 0:
-			answer, f.polls = f.polls[0], f.polls[1:]
+		f.requests = append(f.requests, r.Method+" "+r.URL.Path)
+		reply := func(status int, body any) {
+			w.Header().Set("Content-Type", "application/json")
+			if status >= 400 {
+				w.Header().Set("Content-Type", "application/problem+json")
+			}
+			w.WriteHeader(status)
+			_ = json.NewEncoder(w).Encode(body)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(answer.status)
-		_ = json.NewEncoder(w).Encode(answer.body)
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/warp":
+			capabilities := []string{}
+			if f.offer {
+				capabilities = append(capabilities, "oauth_browser")
+			}
+			reply(200, map[string]any{"protocol": "warp-sql", "protocol_versions": []string{"1"},
+				"server": map[string]string{"name": "Hardcharger", "version": "0"}, "capabilities": capabilities,
+				"auth": map[string]any{"grant_types": []string{"password"}, "oauth_browser": map[string]string{}}})
+		case r.Method == http.MethodPost && r.URL.Path == "/warp/v1/auth/oauth/flows":
+			reply(201, map[string]any{"flow_id": "f_1", "poll_secret": fakePollSecret,
+				"authorize_url": "http://idp/authorize?state=s", "poll_interval_s": 1, "expires_at": "2099-01-01T00:00:00Z"})
+		case r.Method == http.MethodPost && r.URL.Path == "/warp/v1/auth/oauth/flows/f_1":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.secrets = append(f.secrets, body["poll_secret"])
+			answer := fakeAnswer{200, map[string]any{"state": "pending"}}
+			if body["poll_secret"] != fakePollSecret {
+				answer = fakeAnswer{404, map[string]any{"code": "flow_not_found", "status": 404, "detail": "no such flow"}}
+			} else if len(f.polls) > 0 {
+				answer, f.polls = f.polls[0], f.polls[1:]
+			}
+			reply(answer.status, answer.body)
+		case r.Method == http.MethodPost && r.URL.Path == "/warp/v1/sessions":
+			f.sessions = append(f.sessions, r.Header.Get("Authorization"))
+			reply(201, map[string]any{"session_id": "s1", "options": map[string]any{}})
+		case r.Method == http.MethodDelete:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			reply(404, map[string]any{"code": "not_found", "status": 404})
+		}
 	}))
 	t.Cleanup(f.server.Close)
 	return f
 }
 
+// withBrowser replaces the browser: fn gets the opener's command and the URL.
 func withBrowser(t *testing.T, fn func(command, url string) error) {
 	t.Helper()
-	saved, savedInterval := openBrowser, oauthPollInterval
-	openBrowser, oauthPollInterval = fn, 10*time.Millisecond
-	t.Cleanup(func() { openBrowser, oauthPollInterval = saved, savedInterval })
+	saved := openBrowser
+	openBrowser = func(command string) warpsql.BrowserOpener {
+		return func(_ context.Context, url string) error { return fn(command, url) }
+	}
+	t.Cleanup(func() { openBrowser = saved })
 }
 
+func (f *fakeSignIn) options(extra ...string) map[string]string {
+	u, _ := url.Parse(f.server.URL)
+	options := map[string]string{adbc.OptionKeyURI: "hardcharger://" + u.Host + "?tls=false", OptionAuthType: AuthTypeExternal}
+	for i := 0; i+1 < len(extra); i += 2 {
+		options[extra[i]] = extra[i+1]
+	}
+	return options
+}
+
+var completeAnswer = fakeAnswer{200, map[string]any{"state": "complete", "access_token": "server-token",
+	"token_type": "Bearer", "expires_in": 3600}}
+
+// The browser sign-in runs the protocol's flow on the server's own port and
+// opens sessions with the server's token.
 func TestBrowserSignInCompletesAfterPending(t *testing.T) {
 	var opened []string
 	withBrowser(t, func(command, url string) error { opened = append(opened, command+" "+url); return nil })
-	fake := newFakeSignIn(t, fakeAnswer{200, map[string]any{"status": "pending"}},
-		fakeAnswer{200, map[string]any{"status": "complete", "token": "id.token.jwt"}})
-	token, err := browserSignIn(context.Background(), oauthTarget{baseURL: fake.server.URL}, "my-browser --new", time.Minute)
-	if err != nil || token != "id.token.jwt" {
-		t.Fatalf("token %q, %v", token, err)
+	fake := newFakeSignIn(t, fakeAnswer{200, map[string]any{"state": "pending"}}, completeAnswer)
+	db, err := newDB(t, fake.options(OptionOAuthBrowser, "my-browser --new"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	cnxn, err := db.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cnxn.Close(context.Background())
 	if len(opened) != 1 || opened[0] != "my-browser --new http://idp/authorize?state=s" {
 		t.Fatalf("opened %q", opened)
 	}
-	if strings.Join(fake.requests, " ") != "/oauth/initiate /oauth/token/u-1 /oauth/token/u-1" {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if got := strings.Join(fake.requests[:4], ", "); got !=
+		"GET /warp, POST /warp/v1/auth/oauth/flows, POST /warp/v1/auth/oauth/flows/f_1, POST /warp/v1/auth/oauth/flows/f_1" {
 		t.Fatalf("requests %q", fake.requests)
+	}
+	for _, secret := range fake.secrets {
+		if secret != fakePollSecret {
+			t.Fatalf("polled with %q", secret)
+		}
+	}
+	if len(fake.sessions) != 1 || fake.sessions[0] != "Bearer server-token" {
+		t.Fatalf("sessions opened with %q", fake.sessions)
+	}
+	for _, request := range fake.requests {
+		if strings.Contains(request, "/oauth/initiate") || strings.Contains(request, "/oauth/token") {
+			t.Fatalf("a 1.x sign-in route was called: %s", request)
+		}
 	}
 }
 
 func TestBrowserSignInFailures(t *testing.T) {
 	withBrowser(t, func(string, string) error { return nil })
 	for _, tc := range []struct {
-		name     string
-		polls    []fakeAnswer
-		initiate *fakeAnswer
-		timeout  time.Duration
-		status   adbc.Status
-		text     string
+		name    string
+		polls   []fakeAnswer
+		offer   bool
+		timeout string
+		status  adbc.Status
+		text    string
 	}{
-		{"provider error", []fakeAnswer{{200, map[string]any{"status": "error", "error": "invalid_grant: bad code"}}},
-			nil, time.Minute, adbc.StatusUnauthenticated, "the sign-in failed: invalid_grant: bad code"},
-		{"expired", []fakeAnswer{{404, map[string]any{"status": "not_found"}}},
-			nil, time.Minute, adbc.StatusUnauthenticated, "expired or was already used"},
-		{"timeout", nil, nil, 50 * time.Millisecond, adbc.StatusTimeout, "timed out after 50ms"},
-		{"not configured", nil, &fakeAnswer{404, map[string]any{"error": "not_found"}},
-			time.Minute, adbc.StatusIO, "answered HTTP 404 to /oauth/initiate"},
+		{"refused", []fakeAnswer{{200, map[string]any{"state": "failed", "error": map[string]string{
+			"code": "access_denied", "detail": "access_denied: the user said no"}}}},
+			true, "", adbc.StatusUnauthenticated, "the user said no (access_denied"},
+		{"not authorized", []fakeAnswer{{200, map[string]any{"state": "failed", "error": map[string]string{
+			"code": "invalid_credentials", "detail": "User 'mallory@evil.com' is not authorized"}}}},
+			true, "", adbc.StatusUnauthenticated, "User 'mallory@evil.com' is not authorized (invalid_credentials"},
+		{"expired", []fakeAnswer{{404, map[string]any{"code": "flow_not_found", "status": 404, "detail": "no such flow"}}},
+			true, "", adbc.StatusUnauthenticated, "expired or was already collected"},
+		{"timeout", nil, true, "0.05", adbc.StatusTimeout, "not completed within 50ms"},
+		{"not configured", nil, false, "", adbc.StatusUnauthenticated, "does not offer browser sign-in"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fake := newFakeSignIn(t, tc.polls...)
-			fake.initiate = tc.initiate
-			_, err := browserSignIn(context.Background(), oauthTarget{baseURL: fake.server.URL}, "", tc.timeout)
+			fake.offer = tc.offer
+			options := fake.options()
+			if tc.timeout != "" {
+				options[OptionOAuthTimeoutSeconds] = tc.timeout
+			}
+			db, err := newDB(t, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = db.Open(context.Background())
 			wantStatus(t, err, tc.status, tc.text)
+			if len(fake.sessions) != 0 {
+				t.Fatal("a session was opened")
+			}
 		})
 	}
-	_, err := browserSignIn(context.Background(), oauthTarget{baseURL: "http://127.0.0.1:1"}, "", time.Minute)
-	wantStatus(t, err, adbc.StatusIO, "could not reach Hardcharger's sign-in server")
+	db, err := newDB(t, map[string]string{adbc.OptionKeyURI: "hardcharger://127.0.0.1:1?tls=false",
+		OptionAuthType: AuthTypeExternal})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Open(context.Background())
+	wantStatus(t, err, adbc.StatusIO, "connecting to")
 }
 
 func TestBrowserNoneOnlyPrintsTheURL(t *testing.T) {
-	called := false
-	withBrowser(t, func(string, string) error { called = true; return nil })
-	fake := newFakeSignIn(t, fakeAnswer{200, map[string]any{"status": "complete", "token": "t"}})
-	if _, err := browserSignIn(context.Background(), oauthTarget{baseURL: fake.server.URL}, "none", time.Minute); err != nil {
+	var commands []string
+	withBrowser(t, func(command, _ string) error { commands = append(commands, command); return nil })
+	fake := newFakeSignIn(t, completeAnswer)
+	db, err := newDB(t, fake.options(OptionOAuthBrowser, "none"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if called {
-		t.Fatal("the browser was opened")
+	cnxn, err := db.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = cnxn.Close(context.Background())
+	// "none" reaches the Warp SQL driver's opener, which prints the URL instead.
+	if len(commands) != 1 || commands[0] != warpsql.BrowserNone {
+		t.Fatalf("commands %q", commands)
 	}
 }
 
-func TestOAuthTargetFollowsTheConnection(t *testing.T) {
-	cfg := newConfig()
-	for warpURI, want := range map[string]string{
-		"warp://db.example.com:31337":      "https://db.example.com:31339",
-		"warp://127.0.0.1:31337?tls=false": "http://127.0.0.1:31339",
-		"http://127.0.0.1:8080":            "http://127.0.0.1:31339",
-		"warp://[::1]:31337?tls=false":     "http://[::1]:31339",
-	} {
-		target, err := oauthTargetFor(cfg, warpURI, nil)
-		if err != nil || target.baseURL != want {
-			t.Errorf("%s: %q, %v; want %q", warpURI, target.baseURL, err, want)
-		}
+// HARDCHARGER_BROWSER is the default browser command.
+func TestBrowserCommandFromTheEnvironment(t *testing.T) {
+	t.Setenv("HARDCHARGER_BROWSER", "env-browser")
+	var commands []string
+	withBrowser(t, func(command, _ string) error { commands = append(commands, command); return nil })
+	fake := newFakeSignIn(t, completeAnswer)
+	db, err := newDB(t, fake.options())
+	if err != nil {
+		t.Fatal(err)
 	}
-	cfg.oauthURL = "https://sso.example.com/"
-	if target, _ := oauthTargetFor(cfg, "warp://h:1", nil); target.baseURL != "https://sso.example.com" {
-		t.Errorf("explicit url: %q", target.baseURL)
+	cnxn, err := db.Open(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	_, err := oauthTargetFor(newConfig(), "warp://h:1", map[string]string{"adbc.warp.tls.root_certs": "not pem"})
-	wantStatus(t, err, adbc.StatusInvalidArgument, "holds no PEM certificate")
+	_ = cnxn.Close(context.Background())
+	if len(commands) != 1 || commands[0] != "env-browser" {
+		t.Fatalf("commands %q", commands)
+	}
+}
+
+// The 1.x sign-in server's options are gone.
+func TestSideSignInServerOptionsAreGone(t *testing.T) {
+	for _, key := range []string{"adbc.hardcharger.oauth.url", "adbc.hardcharger.oauth.port"} {
+		_, err := newDB(t, map[string]string{adbc.OptionKeyURI: "hardcharger://h", key: "x"})
+		wantStatus(t, err, adbc.StatusNotImplemented, "unknown option "+key)
+	}
 }
 
 func TestIngestPartsIsTheWarpOption(t *testing.T) {

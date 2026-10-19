@@ -22,11 +22,8 @@ from ._version import __version__
 
 #: Hardcharger's Warp SQL port, used when a hardcharger:// URI names none.
 DEFAULT_PORT = 31337
-#: The port of Hardcharger's browser sign-in server.
-DEFAULT_OAUTH_PORT = 31339
 
 __all__ = [
-    "DEFAULT_OAUTH_PORT",
     "DEFAULT_PORT",
     "ConnectionOptions",
     "DatabaseOptions",

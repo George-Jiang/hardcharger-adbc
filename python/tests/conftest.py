@@ -36,7 +36,6 @@ class Server:
     process: subprocess.Popen
     log: Path
     tls: bool = False
-    oauth_port: int | None = None
 
     @property
     def base_url(self) -> str:
@@ -102,14 +101,16 @@ def _wait_up(server: Server, timeout: float = 30) -> None:
     )
 
 
-def start_server(
-    workdir: Path, extra_args: list[str] | None = None, oauth_port: int | None = None
-) -> Server:
-    """Start hardcharger-server on a free port, in ``workdir``, with an in-memory database."""
+def start_server(workdir: Path, extra_args: list[str] | None = None) -> Server:
+    """Start hardcharger-server on a free port, in ``workdir``, with an in-memory database
+    and DuckDB's persistent secrets in ``workdir`` (never ~/.duckdb's). ``{base_url}`` in an
+    argument is the server's own URL."""
     binary = server_binary()
-    extra_args = list(extra_args or [])
     workdir.mkdir(parents=True, exist_ok=True)
     port = free_port()
+    extra_args = [
+        arg.replace("{base_url}", f"http://127.0.0.1:{port}") for arg in (extra_args or [])
+    ]
     password = secrets.token_urlsafe(nbytes=12) + ":p@ss:word"
     log = workdir / "hardcharger-server.log"
     with log.open(mode="ab") as out:
@@ -126,6 +127,8 @@ def start_server(
                 ":memory:",
                 "--admin-username",
                 USERNAME,
+                "--init-sql-commands",
+                f"SET secret_directory = '{(workdir / 'secrets').as_posix()}'",
                 *extra_args,
             ],
             env={**clean_environment(), "HARDCHARGER_ADMIN_PASSWORD": password},
@@ -140,7 +143,6 @@ def start_server(
         process=process,
         log=log,
         tls="--tls-cert" in extra_args,
-        oauth_port=oauth_port,
     )
     _wait_up(server=server)
     return server

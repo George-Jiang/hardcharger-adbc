@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -67,13 +68,12 @@ func TestMain(m *testing.M) {
 }
 
 type testServer struct {
-	cmd       *exec.Cmd
-	port      int
-	password  string
-	tls       bool
-	oauthPort int
-	log       *syncBuffer
-	dir       string
+	cmd      *exec.Cmd
+	port     int
+	password string
+	tls      bool
+	log      *syncBuffer
+	dir      string
 }
 
 type syncBuffer struct {
@@ -124,15 +124,16 @@ func launchServer(extraArgs []string) (*testServer, error) {
 		return nil, err
 	}
 	server := &testServer{port: port, password: hex.EncodeToString(secret) + ":p@ss:word", log: &syncBuffer{}, dir: dir}
+	// DuckDB's persistent secrets in the test's own directory, never ~/.duckdb's.
 	args := []string{"--host", "127.0.0.1", "--port", strconv.Itoa(port), "--health-port", "0",
-		"--database", ":memory:", "--admin-username", testUsername, "--print-queries", "false"}
+		"--database", ":memory:", "--admin-username", testUsername, "--print-queries", "false",
+		"--init-sql-commands", "SET secret_directory = '" + filepath.ToSlash(filepath.Join(dir, "secrets")) + "'"}
 	for i, arg := range extraArgs {
-		switch arg {
-		case "--tls-cert":
+		if arg == "--tls-cert" {
 			server.tls = true
-		case "--oauth-port":
-			server.oauthPort, _ = strconv.Atoi(extraArgs[i+1])
 		}
+		// {base_url}: the server's own URL, for flags that need it before it runs.
+		extraArgs[i] = strings.ReplaceAll(arg, "{base_url}", fmt.Sprintf("http://127.0.0.1:%d", port))
 	}
 	server.cmd = exec.Command(os.Getenv(serverBinaryEnv), append(args, extraArgs...)...)
 	server.cmd.Dir = dir

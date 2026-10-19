@@ -8,7 +8,7 @@ from unittest.mock import patch
 import adbc_driver_manager
 import pytest
 
-from adbc_driver_hardcharger import DEFAULT_OAUTH_PORT, DEFAULT_PORT, manifest
+from adbc_driver_hardcharger import DEFAULT_PORT, manifest
 from adbc_driver_hardcharger import dbapi as hardcharger
 from adbc_driver_hardcharger._driver import _driver_path
 
@@ -45,8 +45,6 @@ class TestConnectOptions:
         hardcharger.connect(
             uri="hardcharger://h",
             auth_type="external",
-            oauth_url="https://sso.example.com",
-            oauth_port=4000,
             oauth_timeout=2.5,
             open_browser=False,
             session_tag={"app": "etl"},
@@ -58,8 +56,6 @@ class TestConnectOptions:
         assert _db_kwargs(mock_db=mock_db) == {
             "uri": "hardcharger://h",
             "adbc.hardcharger.auth_type": "external",
-            "adbc.hardcharger.oauth.url": "https://sso.example.com",
-            "adbc.hardcharger.oauth.port": "4000",
             "adbc.hardcharger.oauth.timeout_seconds": "2.5",
             "adbc.hardcharger.oauth.browser": "none",
             "adbc.hardcharger.session_tag": '{"app":"etl"}',
@@ -96,6 +92,17 @@ class TestConnectOptions:
         assert kwargs["adbc.warp.tls.client_cert"] == PEM
         assert kwargs["adbc.warp.tls.client_key"].startswith("-----BEGIN PRIVATE KEY-----")
         assert "username" not in kwargs and "password" not in kwargs
+
+    def test_the_side_sign_in_servers_arguments_are_gone(self, mock_db, mock_conn, mock_cls):
+        # Browser sign-in is on the server's own port: no sign-in server URL or port.
+        for argument in ("oauth_url", "oauth_port"):
+            with pytest.raises(expected_exception=TypeError, match=argument):
+                hardcharger.connect(uri="hardcharger://h", auth_type="external", **{argument: "x"})
+        import adbc_driver_hardcharger
+
+        assert not hasattr(adbc_driver_hardcharger, "DEFAULT_OAUTH_PORT")
+        assert not hasattr(adbc_driver_hardcharger.DatabaseOptions, "OAUTH_URL")
+        assert not hasattr(adbc_driver_hardcharger.DatabaseOptions, "OAUTH_PORT")
 
     def test_external_auth_refuses_a_password(self, mock_db, mock_conn, mock_cls):
         with pytest.raises(expected_exception=ValueError, match="drop username, password"):
@@ -152,7 +159,7 @@ def test_value_helpers():
     assert hardcharger._setting_text(value=30) == "30"
     with pytest.raises(expected_exception=TypeError, match="str, int or bool, not float"):
         hardcharger._setting_text(value=1.5)
-    assert DEFAULT_PORT == 31337 and DEFAULT_OAUTH_PORT == 31339
+    assert DEFAULT_PORT == 31337
 
 
 class TestManifest:
@@ -177,11 +184,23 @@ class TestLibrary:
             uri="hardcharger://127.0.0.1?tls=false",
             username="u",
             password="p",
-            **{"adbc.hardcharger.query_tag": '{"a":1}', "adbc.hardcharger.oauth.port": "4000"},
+            **{
+                "adbc.hardcharger.query_tag": '{"a":1}',
+                "adbc.hardcharger.oauth.timeout_seconds": "40",
+            },
         ) as db:
             assert db.get_option(key="uri") == "hardcharger://127.0.0.1?tls=false"
             assert db.get_option(key="adbc.hardcharger.query_tag") == '{"a":1}'
-            assert db.get_option(key="adbc.hardcharger.oauth.port") == "4000"
+            assert db.get_option(key="adbc.hardcharger.oauth.timeout_seconds") == "40"
+
+    def test_the_side_sign_in_servers_options_are_refused(self):
+        # The library refuses them by name: browser sign-in is on the server's own port.
+        for key in ("adbc.hardcharger.oauth.port", "adbc.hardcharger.oauth.url"):
+            with pytest.raises(expected_exception=adbc_driver_manager.NotSupportedError) as error:
+                adbc_driver_manager.AdbcDatabase(
+                    driver=_driver_path(), uri="hardcharger://127.0.0.1", **{key: "x"}
+                )
+            assert f"unknown option {key}" in str(error.value)
 
     def test_client_certificate_reaches_the_warp_sql_driver(self):
         # Its checks run on auth_type=client_certificate: a password beside the certificate is

@@ -243,8 +243,6 @@ def connect(
     password: Optional[str] = None,
     access_token: Optional[str] = None,
     auth_type: Literal["password", "external", "client_certificate", "mtls"] = "password",
-    oauth_url: Optional[str] = None,
-    oauth_port: Optional[int] = None,
     oauth_timeout: Optional[float] = None,
     open_browser: Union[bool, str] = True,
     share_sign_in: Union[bool, str] = False,
@@ -271,25 +269,23 @@ def connect(
         username: User name for password sign-in.
         password: Password for password sign-in.
         access_token: A Hardcharger access token obtained elsewhere.
-        auth_type: ``"password"`` (default); ``"external"``: sign in through the server's
-            browser sign-in (``hardcharger-server --oauth-client-id``); or
+        auth_type: ``"password"`` (default); ``"external"``: sign in through a browser with
+            the server's identity provider (``hardcharger-server --oauth-client-id``; the
+            server lists the Warp SQL capability ``oauth_browser``); or
             ``"client_certificate"`` (``"mtls"``): sign in with the TLS client certificate
             (``tls_client_cert`` and ``tls_client_key``) and no password, on a server with
             ``--mtls-ca-cert`` and ``--mtls-certificate-sign-in``. The token is bound to the
             certificate.
-        oauth_url: Base URL of the browser sign-in server (``--oauth-base-url``). Default:
-            ``https://HOST:oauth_port``, or ``http://`` when the URI says ``?tls=false``.
-        oauth_port: Port of the browser sign-in server (default 31339).
         oauth_timeout: Seconds to wait for the browser sign-in (default 300).
         open_browser: ``True`` opens the system browser (or ``$HARDCHARGER_BROWSER``),
             ``False`` prints the URL to stderr, and a string is the command to open it with
             (the URL is appended).
         share_sign_in: For ``auth_type="external"``: ``True`` shares one browser sign-in among
-            every connection this process opens to the same server (same sign-in server and
-            TLS trust) with ``share_sign_in=True``, instead of one browser window per
-            connection. The first connection signs in (connections opened meanwhile wait for
-            it); the others reuse its ID token, each exchanging it for an access token of its
-            own, until shortly before it expires, when the next connection signs in again. A
+            every connection this process opens to the same server (same TLS trust) with
+            ``share_sign_in=True``, instead of one browser window per connection. The first
+            connection signs in (connections opened meanwhile wait for it); the others reuse
+            the server's access token it got, until shortly before it expires, when the next
+            connection signs in again. A
             string shares under that name, for a process that signs in as more than one person
             or role: only connections with the same name share. The token stays in this
             process's memory and never goes to another server.
@@ -349,8 +345,6 @@ def connect(
     put(key=options.ACCESS_TOKEN.value, value=access_token)
     if auth_type != "password":
         put(key=options.AUTH_TYPE.value, value=auth_type)
-    put(key=options.OAUTH_URL.value, value=oauth_url)
-    put(key=options.OAUTH_PORT.value, value=None if oauth_port is None else str(oauth_port))
     put(
         key=options.OAUTH_TIMEOUT_SECONDS.value,
         value=None if oauth_timeout is None else str(oauth_timeout),

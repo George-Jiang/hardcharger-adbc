@@ -18,6 +18,7 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/gizmodata/warp-sql-adbc/go/warpsql"
 	"go.uber.org/goleak"
 )
 
@@ -139,21 +140,24 @@ func TestIntegrationPlainHTTPThroughTheRecordingProxyTwin(t *testing.T) {
 // --- one browser sign-in for many connections ---------------------------------------------------
 
 // countBrowser is browserThatSignsIn, counting the sign-ins.
-func countBrowser(t *testing.T, server *testServer, code string) *atomic.Int64 {
-	browserThatSignsIn(t, server, code)
+func countBrowser(t *testing.T, idp *mockIdP, code string) *atomic.Int64 {
+	browserThatSignsIn(t, idp, code)
 	signIn := openBrowser
 	count := &atomic.Int64{}
-	openBrowser = func(command, url string) error {
-		count.Add(1)
-		return signIn(command, url)
+	openBrowser = func(command string) warpsql.BrowserOpener {
+		inner := signIn(command)
+		return func(ctx context.Context, url string) error {
+			count.Add(1)
+			return inner(ctx, url)
+		}
 	}
 	return count
 }
 
 // oauthOptions are the options of a browser sign-in to server, shared when key is not nil.
 func oauthOptions(server *testServer, key *string) map[string]string {
-	options := map[string]string{adbc.OptionKeyUsername: "<unset>", adbc.OptionKeyPassword: "<unset>",
-		OptionAuthType: AuthTypeExternal, OptionOAuthPort: strconv.Itoa(server.oauthPort)}
+	options := map[string]string{adbc.OptionKeyUsername: "", adbc.OptionKeyPassword: "",
+		OptionAuthType: AuthTypeExternal}
 	if key != nil {
 		options[OptionOAuthShareSignIn] = "true"
 		options[OptionOAuthSignInKey] = *key
@@ -167,7 +171,7 @@ func TestIntegrationSharedSignInSignsInOnce(t *testing.T) {
 	ForgetSharedSignIns()
 	idp := newMockIdP(t)
 	server := startOAuthServer(t, idp)
-	signIns := countBrowser(t, server, "code-ok")
+	signIns := countBrowser(t, idp, "code-ok")
 	// One after another, as dbt opens its connections: each a database of its own.
 	for i := range 5 {
 		cnxn := mustOpen(t, server, oauthOptions(server, ptr("")))
@@ -201,7 +205,7 @@ func TestIntegrationUnsharedSignInTwin(t *testing.T) {
 	ForgetSharedSignIns()
 	idp := newMockIdP(t)
 	server := startOAuthServer(t, idp)
-	signIns := countBrowser(t, server, "code-ok")
+	signIns := countBrowser(t, idp, "code-ok")
 	for range 3 {
 		mustOpen(t, server, oauthOptions(server, nil))
 	}
@@ -214,7 +218,7 @@ func TestIntegrationSharedSignInIsPerServerAndKey(t *testing.T) {
 	ForgetSharedSignIns()
 	idp := newMockIdP(t)
 	first, second := startOAuthServer(t, idp), startOAuthServer(t, idp)
-	signIns := countBrowser(t, first, "code-ok")
+	signIns := countBrowser(t, idp, "code-ok")
 	mustOpen(t, first, oauthOptions(first, ptr("")))
 	mustOpen(t, first, oauthOptions(first, ptr("")))
 	if got := signIns.Load(); got != 1 {
@@ -225,8 +229,8 @@ func TestIntegrationSharedSignInIsPerServerAndKey(t *testing.T) {
 	if got := signIns.Load(); got != 2 {
 		t.Fatalf("another key: signed in %d times in all, want 2", got)
 	}
-	// Another server never gets the first one's token: it signs in through its own sign-in server.
-	signIns = countBrowser(t, second, "code-ok")
+	// Another server never gets the first one's token: it signs in on its own.
+	signIns = countBrowser(t, idp, "code-ok")
 	mustOpen(t, second, oauthOptions(second, ptr("")))
 	mustOpen(t, second, oauthOptions(second, ptr("")))
 	if got := signIns.Load(); got != 1 {
@@ -237,14 +241,15 @@ func TestIntegrationSharedSignInIsPerServerAndKey(t *testing.T) {
 func TestIntegrationSharedSignInRenewsBeforeTheTokenExpires(t *testing.T) {
 	ForgetSharedSignIns()
 	idp := newMockIdP(t)
-	idp.lifetime.Store(8) // shared until 2 s (a quarter) before it expires
-	server := startOAuthServer(t, idp)
-	signIns := countBrowser(t, server, "code-ok")
-	start := time.Now()
+	// The server's tokens last 8 s: shared until 2 s (a quarter) before they expire.
+	server := startOAuthServer(t, idp, "--token-lifetime-seconds", "8")
+	signIns := countBrowser(t, idp, "code-ok")
 	db, early, err := open(t, server, oauthOptions(server, ptr("")))
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The server issued the token when the sign-in was collected, before Open returned.
+	start := time.Now()
 	mustOpen(t, server, oauthOptions(server, ptr("")))
 	if got := signIns.Load(); got != 1 {
 		t.Fatalf("signed in %d times, want 1", got)
@@ -262,27 +267,31 @@ func TestIntegrationSharedSignInRenewsBeforeTheTokenExpires(t *testing.T) {
 	if got := signIns.Load(); got != 2 {
 		t.Fatalf("a token about to expire was shared (%d sign-ins, want 2)", got)
 	}
-	// Both connections still work: each exchanged its ID token for its own access token.
-	for _, cnxn := range []adbc.ConnectionWithContext{early, late} {
-		if got := scalar(t, cnxn, "SELECT HARDCHARGER_USER()"); got != idp.email {
-			t.Fatalf("signed in as %s", got)
-		}
+	// The late connection works with its new token. The early one's token, the server's own
+	// from a browser sign-in, can't be renewed: once it expires the server says so.
+	if got := scalar(t, late, "SELECT HARDCHARGER_USER()"); got != idp.email {
+		t.Fatalf("signed in as %s", got)
 	}
+	time.Sleep(time.Until(start.Add(8500 * time.Millisecond)))
+	stmt, err := early.NewStatement(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stmt.Close(context.Background())
+	_ = stmt.SetSqlQuery(context.Background(), "SELECT 1")
+	_, _, err = stmt.ExecuteQuery(context.Background())
+	wantStatus(t, err, adbc.StatusUnauthenticated, "token_expired")
 }
 
 // sharedEntryOf is the shared sign-in a database uses.
 func sharedEntryOf(t *testing.T, db adbc.DatabaseWithContext) *sharedSignIn {
 	t.Helper()
 	d := db.(*database)
-	target, err := oauthTargetFor(d.cfg, d.warpURI, d.warpOptions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return sharedSignInFor(signInKeyFor(d.warpURI, target, d.warpOptions, d.cfg.signInKey))
+	return sharedSignInFor(signInKeyFor(d.warpURI, d.warpOptions, d.cfg.signInKey))
 }
 
 // poisonSharedSignIn replaces the shared sign-in of the databases that options
-// open on server with a token the server refuses (well formed, unexpired, unsigned).
+// open on server with a token the server refuses (one it never issued).
 func poisonSharedSignIn(t *testing.T, server *testServer, options map[string]string) {
 	t.Helper()
 	db, _, err := open(t, server, options)
@@ -291,7 +300,7 @@ func poisonSharedSignIn(t *testing.T, server *testServer, options map[string]str
 	}
 	entry := sharedEntryOf(t, db)
 	entry.mu.Lock()
-	entry.token = fakeJWT(map[string]any{"iss": "nobody", "exp": time.Now().Add(time.Hour).Unix()})
+	entry.token = "a-token-this-server-never-issued"
 	entry.renewAt = time.Now().Add(time.Hour)
 	entry.mu.Unlock()
 }
@@ -300,7 +309,7 @@ func TestIntegrationARefusedSharedTokenIsReplaced(t *testing.T) {
 	ForgetSharedSignIns()
 	idp := newMockIdP(t)
 	server := startOAuthServer(t, idp)
-	signIns := countBrowser(t, server, "code-ok")
+	signIns := countBrowser(t, idp, "code-ok")
 	poisonSharedSignIn(t, server, oauthOptions(server, ptr("")))
 	if got := signIns.Load(); got != 1 {
 		t.Fatalf("signed in %d times, want 1", got)
@@ -321,11 +330,11 @@ func TestIntegrationARefusedSharedTokenThenAFailedSignIn(t *testing.T) {
 	ForgetSharedSignIns()
 	idp := newMockIdP(t)
 	server := startOAuthServer(t, idp)
-	countBrowser(t, server, "code-ok")
+	countBrowser(t, idp, "code-ok")
 	poisonSharedSignIn(t, server, oauthOptions(server, ptr("")))
-	signIns := countBrowser(t, server, "code-bad")
+	signIns := countBrowser(t, idp, "code-bad")
 	_, _, err := open(t, server, oauthOptions(server, ptr("")))
-	wantStatus(t, err, adbc.StatusUnauthenticated, "the sign-in failed")
+	wantStatus(t, err, adbc.StatusUnauthenticated, "invalid_grant")
 	if got := signIns.Load(); got != 1 {
 		t.Fatalf("signed in %d times after the refusal, want 1", got)
 	}

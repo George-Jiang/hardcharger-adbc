@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Browser sign-in (`auth_type=external`) is Warp SQL's (spec §4.3), on the server's own port and
+  URL, run by the Warp SQL driver (`warpsql.BrowserSignIn`, warp-sql-adbc 6ee3a73): the driver
+  creates a flow, opens the identity provider's page, polls the flow with its secret and gets
+  the server's own access token, which it uses as `adbc.warp.auth.access_token` (the identity
+  provider's ID token never reaches the client). A server without browser sign-in is refused
+  before any browser opens ("does not offer browser sign-in", `UNAUTHENTICATED`); a refusal
+  carries the server's code (`access_denied`, `invalid_credentials`, `identity_provider_error`)
+  and detail. A shared sign-in (`share_sign_in`) now shares the access token, renewed from its
+  `expires_in`; its key no longer has a sign-in server URL. The token can't be renewed: once it
+  expires, a connection's requests are refused (`token_expired`) and a new connection signs in
+  again. Needs a Hardcharger server with browser sign-in on its main port.
+
+### Removed
+
+- The client of GizmoSQL 1.x's separate sign-in server (`/oauth/initiate`, `/oauth/token/…` on
+  port 31339): the options `adbc.hardcharger.oauth.url` and `adbc.hardcharger.oauth.port`
+  (refused now as unknown options), Go's `DefaultOAuthPort`, Python's `connect(oauth_url=...,
+  oauth_port=...)`, `DEFAULT_OAUTH_PORT`, `DatabaseOptions.OAUTH_URL` and `OAUTH_PORT`.
+
 ### Documentation
 
 - Trademark notices: Hardcharger™ and GizmoData™ on the README titles and first mentions, package

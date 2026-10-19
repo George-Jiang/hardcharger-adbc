@@ -20,9 +20,6 @@ const (
 	// DefaultPort is Hardcharger's Warp SQL port, used when a hardcharger://
 	// URI names none (warp:// would default to 443).
 	DefaultPort = 31337
-	// DefaultOAuthPort is the port of Hardcharger's browser sign-in server
-	// (hardcharger-server --oauth-port).
-	DefaultOAuthPort = 31339
 )
 
 // ToWarpURI translates a hardcharger:// URI into the warp:// URI the Warp SQL

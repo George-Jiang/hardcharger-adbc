@@ -5,13 +5,10 @@ package hardcharger
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,27 +20,17 @@ import (
 
 // --- shared browser sign-in -------------------------------------------------------------------
 
-// fakeJWT is an unsigned JWT with the given claims (the driver reads exp and
-// iat only; the server verifies tokens).
-func fakeJWT(claims map[string]any) string {
-	b64 := func(v any) string { data, _ := json.Marshal(v); return base64.RawURLEncoding.EncodeToString(data) }
-	return b64(map[string]string{"alg": "RS256", "typ": "JWT"}) + "." + b64(claims) + ".c2ln"
-}
-
 func TestRenewTime(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	for name, tc := range map[string]struct {
-		token string
-		want  time.Time
+		lifetime time.Duration
+		want     time.Time
 	}{
-		"an hour":            {fakeJWT(map[string]any{"iat": now.Unix(), "exp": now.Add(time.Hour).Unix()}), now.Add(time.Hour - time.Minute)},
-		"short: a quarter":   {fakeJWT(map[string]any{"iat": now.Unix(), "exp": now.Add(8 * time.Second).Unix()}), now.Add(6 * time.Second)},
-		"no iat: from now":   {fakeJWT(map[string]any{"exp": now.Add(8 * time.Second).Unix()}), now.Add(6 * time.Second)},
-		"no exp: unknown":    {fakeJWT(map[string]any{"iat": now.Unix()}), time.Time{}},
-		"not a JWT: unknown": {"opaque-token", time.Time{}},
-		"bad payload":        {"a.%%%.c", time.Time{}},
+		"an hour":          {time.Hour, now.Add(time.Hour - time.Minute)},
+		"short: a quarter": {8 * time.Second, now.Add(6 * time.Second)},
+		"unknown":          {0, time.Time{}},
 	} {
-		if got := renewTime(tc.token, now); !got.Equal(tc.want) {
+		if got := renewTime(tc.lifetime, now); !got.Equal(tc.want) {
 			t.Errorf("%s: %v, want %v", name, got, tc.want)
 		}
 	}
@@ -52,11 +39,11 @@ func TestRenewTime(t *testing.T) {
 func TestSharedSignInRunsOnceForConcurrentCallers(t *testing.T) {
 	shared := &sharedSignIn{running: make(chan struct{}, 1)}
 	var runs atomic.Int64
-	token := fakeJWT(map[string]any{"exp": time.Now().Add(time.Hour).Unix()})
-	signIn := func(context.Context) (string, error) {
+	token := "server-token"
+	signIn := func(context.Context) (string, time.Duration, error) {
 		runs.Add(1)
 		time.Sleep(50 * time.Millisecond) // the user, in the browser
-		return token, nil
+		return token, time.Hour, nil
 	}
 	var wg sync.WaitGroup
 	var freshCount atomic.Int64
@@ -81,11 +68,9 @@ func TestSharedSignInRunsAgainNearExpiryAndAfterForget(t *testing.T) {
 	shared := &sharedSignIn{running: make(chan struct{}, 1)}
 	runs := 0
 	lifetime := 400 * time.Millisecond
-	signIn := func(context.Context) (string, error) {
+	signIn := func(context.Context) (string, time.Duration, error) {
 		runs++
-		now := time.Now()
-		return fakeJWT(map[string]any{"n": runs, "iat": float64(now.UnixMilli()) / 1000,
-			"exp": float64(now.Add(lifetime).UnixMilli()) / 1000}), nil
+		return fmt.Sprintf("token-%d", runs), lifetime, nil
 	}
 	first, _, _ := shared.get(context.Background(), signIn)
 	if again, fresh, _ := shared.get(context.Background(), signIn); again != first || fresh {
@@ -109,7 +94,7 @@ func TestSharedSignInRunsAgainNearExpiryAndAfterForget(t *testing.T) {
 func TestSharedSignInFailureIsNotShared(t *testing.T) {
 	shared := &sharedSignIn{running: make(chan struct{}, 1)}
 	runs := 0
-	failing := func(context.Context) (string, error) { runs++; return "", errors.New("no") }
+	failing := func(context.Context) (string, time.Duration, error) { runs++; return "", 0, errors.New("no") }
 	for range 2 {
 		if _, _, err := shared.get(context.Background(), failing); err == nil {
 			t.Fatal("a failed sign-in succeeded")
@@ -124,32 +109,33 @@ func TestSharedSignInWaiterGivesUp(t *testing.T) {
 	shared := &sharedSignIn{running: make(chan struct{}, 1)}
 	release := make(chan struct{})
 	go func() {
-		_, _, _ = shared.get(context.Background(), func(context.Context) (string, error) { <-release; return "t", nil })
+		_, _, _ = shared.get(context.Background(), func(context.Context) (string, time.Duration, error) {
+			<-release
+			return "t", time.Hour, nil
+		})
 	}()
 	time.Sleep(20 * time.Millisecond)
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, _, err := shared.get(ctx, func(context.Context) (string, error) { return "other", nil })
+	_, _, err := shared.get(ctx, func(context.Context) (string, time.Duration, error) { return "other", time.Hour, nil })
 	wantStatus(t, err, adbc.StatusTimeout, "gave up waiting for the shared sign-in")
 	close(release)
 }
 
 func TestSignInKeys(t *testing.T) {
-	target := oauthTarget{baseURL: "https://h:31339"}
-	base := signInKeyFor("warp://h:31337", target, nil, "")
+	base := signInKeyFor("warp://h:31337", nil, "")
 	same := []signInKey{
-		signInKeyFor("warp://H:31337/", target, map[string]string{"adbc.warp.retry.max_attempts": "2"}, ""),
+		signInKeyFor("warp://H:31337/", map[string]string{"adbc.warp.retry.max_attempts": "2"}, ""),
 	}
 	different := map[string]signInKey{
-		"another server":    signInKeyFor("warp://h:31338", target, nil, ""),
-		"another host":      signInKeyFor("warp://other:31337", target, nil, ""),
-		"plain HTTP":        signInKeyFor("warp://h:31337?tls=false", target, nil, ""),
-		"another base path": signInKeyFor("warp://h:31337/x", target, nil, ""),
-		"another sign-in":   signInKeyFor("warp://h:31337", oauthTarget{baseURL: "https://sso:1"}, nil, ""),
-		"other roots":       signInKeyFor("warp://h:31337", target, map[string]string{"adbc.warp.tls.root_certs": "pem"}, ""),
-		"skip verify":       signInKeyFor("warp://h:31337", target, map[string]string{"adbc.warp.tls.skip_verify": "true"}, ""),
-		"server name":       signInKeyFor("warp://h:31337", target, map[string]string{"adbc.warp.tls.server_name": "x"}, ""),
-		"another key":       signInKeyFor("warp://h:31337", target, nil, "alice"),
+		"another server":    signInKeyFor("warp://h:31338", nil, ""),
+		"another host":      signInKeyFor("warp://other:31337", nil, ""),
+		"plain HTTP":        signInKeyFor("warp://h:31337?tls=false", nil, ""),
+		"another base path": signInKeyFor("warp://h:31337/x", nil, ""),
+		"other roots":       signInKeyFor("warp://h:31337", map[string]string{"adbc.warp.tls.root_certs": "pem"}, ""),
+		"skip verify":       signInKeyFor("warp://h:31337", map[string]string{"adbc.warp.tls.skip_verify": "true"}, ""),
+		"server name":       signInKeyFor("warp://h:31337", map[string]string{"adbc.warp.tls.server_name": "x"}, ""),
+		"another key":       signInKeyFor("warp://h:31337", nil, "alice"),
 	}
 	for _, key := range same {
 		if key != base {
@@ -277,33 +263,26 @@ func TestTLSToAPlainHTTPServerSaysToTurnTLSOff(t *testing.T) {
 	}
 }
 
-func TestBrowserSignInToAPlainHTTPSignInServer(t *testing.T) {
-	signInServer := newPlainHTTPListener(t)
+// Browser sign-in over TLS to a server that speaks plain HTTP: the Warp SQL
+// driver's hint, before any flow is created or a browser opened.
+func TestBrowserSignInToAPlainHTTPServer(t *testing.T) {
+	server := newPlainHTTPListener(t)
 	opened := 0
 	withBrowser(t, func(string, string) error { opened++; return nil })
 	ctx := context.Background()
-	for _, tc := range []struct {
-		options map[string]string
-		advice  string
-	}{
-		{map[string]string{OptionOAuthPort: strconv.Itoa(signInServer.port())}, "Add ?tls=false to the URI"},
-		{map[string]string{OptionOAuthURL: fmt.Sprintf("https://127.0.0.1:%d", signInServer.port())},
-			"Use an http:// URL in adbc.hardcharger.oauth.url"},
-	} {
-		options := map[string]string{"uri": "hardcharger://127.0.0.1:1", OptionAuthType: AuthTypeExternal}
-		for key, value := range tc.options {
-			options[key] = value
-		}
-		db, err := NewDriver(memory.DefaultAllocator).NewDatabaseWithContext(ctx, options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = db.Open(ctx)
-		_ = db.Close(ctx)
-		wantStatus(t, err, adbc.StatusIO, fmt.Sprintf("browser sign-in: The server at 127.0.0.1:%d speaks plain HTTP, not TLS. %s to connect without encryption.",
-			signInServer.port(), tc.advice))
+	db, err := NewDriver(memory.DefaultAllocator).NewDatabaseWithContext(ctx, map[string]string{
+		"uri": fmt.Sprintf("hardcharger://127.0.0.1:%d", server.port()), OptionAuthType: AuthTypeExternal})
+	if err != nil {
+		t.Fatal(err)
 	}
+	_, err = db.Open(ctx)
+	_ = db.Close(ctx)
+	wantStatus(t, err, adbc.StatusIO, fmt.Sprintf("The server at 127.0.0.1:%d speaks plain HTTP, not TLS. "+
+		"Add ?tls=false to the URI to connect without encryption.", server.port()))
 	if opened != 0 {
 		t.Fatalf("the browser was opened %d times", opened)
+	}
+	if bytes.Contains(server.bytes(), []byte("oauth")) {
+		t.Fatal("a sign-in request reached the plain-HTTP server")
 	}
 }
