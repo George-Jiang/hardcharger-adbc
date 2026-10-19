@@ -245,6 +245,11 @@ func (db *database) refusedSharedToken(err error) bool {
 	if db.shared == nil || !errors.As(err, &adbcErr) || adbcErr.Code != adbc.StatusUnauthenticated {
 		return false
 	}
+	// Warp SQL §4.2: after token_revoked, credentials_changed or principal_dropped the
+	// person is told why rather than sent through another sign-in on their behalf.
+	if !renewableRefusal(adbcErr) {
+		return false
+	}
 	db.shared.forget(db.sharedToken)
 	db.shared, db.sharedToken, db.signedIn = nil, "", false
 	return true
@@ -385,3 +390,23 @@ func (c *connection) setting(ctx context.Context, name string) (string, error) {
 var _ driverbase.Driver = (*driverImpl)(nil)
 var _ driverbase.Database = (*database)(nil)
 var _ driverbase.Connection = (*connection)(nil)
+
+// renewableRefusal reports whether a refused token may be replaced by signing in
+// again (Warp SQL §4.2): a refusal without a reason, token_expired, or a reason this
+// driver doesn't know.
+func renewableRefusal(err adbc.Error) bool {
+	for _, detail := range err.Details {
+		if detail.Key() != warpsql.ErrorDetailReason {
+			continue
+		}
+		value, serr := detail.Serialize()
+		if serr != nil {
+			return true
+		}
+		switch string(value) {
+		case "token_revoked", "credentials_changed", "principal_dropped":
+			return false
+		}
+	}
+	return true
+}

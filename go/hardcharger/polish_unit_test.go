@@ -16,6 +16,7 @@ import (
 
 	"github.com/apache/arrow-adbc/go/adbc"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/gizmodata/warp-sql-adbc/go/warpsql"
 )
 
 // --- shared browser sign-in -------------------------------------------------------------------
@@ -284,5 +285,25 @@ func TestBrowserSignInToAPlainHTTPServer(t *testing.T) {
 	}
 	if bytes.Contains(server.bytes(), []byte("oauth")) {
 		t.Fatal("a sign-in request reached the plain-HTTP server")
+	}
+}
+
+func TestARefusedSharedTokenIsReplacedOnlyForRenewableReasons(t *testing.T) {
+	// Warp SQL §4.2: sign in again after no reason, token_expired or an unknown reason;
+	// not after token_revoked, credentials_changed or principal_dropped.
+	refusal := func(reason string) adbc.Error {
+		err := adbc.Error{Code: adbc.StatusUnauthenticated, Msg: "refused"}
+		if reason != "" {
+			err.Details = []adbc.ErrorDetail{&adbc.TextErrorDetail{Name: warpsql.ErrorDetailReason, Detail: reason}}
+		}
+		return err
+	}
+	for reason, want := range map[string]bool{
+		"": true, "token_expired": true, "some_later_reason": true,
+		"token_revoked": false, "credentials_changed": false, "principal_dropped": false,
+	} {
+		if got := renewableRefusal(refusal(reason)); got != want {
+			t.Errorf("renewableRefusal(%q) = %v, want %v", reason, got, want)
+		}
 	}
 }

@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- A shared browser sign-in whose token the server refuses with `token_revoked`,
+  `credentials_changed` or `principal_dropped` no longer starts another browser sign-in on its
+  own (Warp SQL §4.2): the error says why. Without a reason, after `token_expired`, or with a
+  reason the driver doesn't know, it signs in again once, as before.
 - **Warp SQL protocol 1.0.0**, through warp-sql-adbc `b8f6cdd` (needs a Hardcharger server that
   speaks 1.0.0, from its `spec/v1.0` branch; the driver has no fallbacks for the draft's names).
   What changes for Hardcharger users: a server that requires client certificates and gets a
