@@ -247,6 +247,7 @@ def connect(
     oauth_port: Optional[int] = None,
     oauth_timeout: Optional[float] = None,
     open_browser: Union[bool, str] = True,
+    share_sign_in: Union[bool, str] = False,
     session_tag: Optional[Tag] = None,
     query_tag: Optional[Tag] = None,
     settings: Optional[Mapping[str, SettingValue]] = None,
@@ -283,6 +284,15 @@ def connect(
         open_browser: ``True`` opens the system browser (or ``$HARDCHARGER_BROWSER``),
             ``False`` prints the URL to stderr, and a string is the command to open it with
             (the URL is appended).
+        share_sign_in: For ``auth_type="external"``: ``True`` shares one browser sign-in among
+            every connection this process opens to the same server (same sign-in server and
+            TLS trust) with ``share_sign_in=True``, instead of one browser window per
+            connection. The first connection signs in (connections opened meanwhile wait for
+            it); the others reuse its ID token, each exchanging it for an access token of its
+            own, until shortly before it expires, when the next connection signs in again. A
+            string shares under that name, for a process that signs in as more than one person
+            or role: only connections with the same name share. The token stays in this
+            process's memory and never goes to another server.
         session_tag: A JSON object tagging the session (``hardcharger.session_tag``).
         query_tag: A JSON object tagging the session's statements (``hardcharger.query_tag``).
         settings: ``hardcharger.<name>`` session settings to apply, e.g.
@@ -314,6 +324,12 @@ def connect(
             "auth_type='external' signs in through the browser: drop username, password and "
             "access_token"
         )
+    if not isinstance(share_sign_in, (bool, str)):
+        raise TypeError(
+            f"share_sign_in must be a bool or a str, not {type(share_sign_in).__name__}"
+        )
+    if share_sign_in is not False and auth_type != "external":
+        raise ValueError("share_sign_in shares a browser sign-in: it needs auth_type='external'")
 
     db_kwargs = dict(db_kwargs or {})
     conn_kwargs = dict(conn_kwargs or {})
@@ -343,6 +359,10 @@ def connect(
         put(key=options.OAUTH_BROWSER.value, value="none")
     elif isinstance(open_browser, str):
         put(key=options.OAUTH_BROWSER.value, value=open_browser)
+    if share_sign_in is not False:
+        put(key=options.OAUTH_SHARE_SIGN_IN.value, value="true")
+        if isinstance(share_sign_in, str):
+            put(key=options.OAUTH_SIGN_IN_KEY.value, value=share_sign_in)
     if session_tag is not None:
         put(key=options.SESSION_TAG.value, value=_tag_text(tag=session_tag))
     if query_tag is not None:

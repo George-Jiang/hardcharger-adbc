@@ -48,6 +48,21 @@ const (
 	// system's (open, xdg-open, rundll32). "none" only prints the URL to
 	// stderr.
 	OptionOAuthBrowser = "adbc.hardcharger.oauth.browser"
+	// OptionOAuthShareSignIn ("true"/"false", default "false"): share one
+	// browser sign-in among the databases of this process that sign in to the
+	// same server, through the same sign-in server, with the same TLS trust and
+	// OptionOAuthSignInKey. The first to open a connection signs in (the others
+	// wait for it); the rest reuse its ID token until shortly before it
+	// expires, then the next one signs in again. A shared token the server
+	// refuses is dropped and that database signs in again. For applications
+	// that open a database per connection (dbt, pools, the Python DB-API's
+	// connect()), which would otherwise open a browser window for each.
+	// ForgetSharedSignIns drops them all. auth_type external only.
+	OptionOAuthShareSignIn = "adbc.hardcharger.oauth.share_sign_in"
+	// OptionOAuthSignInKey names a shared sign-in (default ""): databases
+	// share one only when their keys match, so a process that signs in as two
+	// people (or two roles) to one server gives each its own key.
+	OptionOAuthSignInKey = "adbc.hardcharger.oauth.sign_in_key"
 
 	// OptionSessionTag is a JSON object tagging the session
 	// (hardcharger.session_tag) in Hardcharger's instrumentation.
@@ -89,6 +104,8 @@ type config struct {
 	oauthPort    int
 	oauthTimeout time.Duration
 	browser      string
+	shareSignIn  bool
+	signInKey    string
 	sessionTag   *string
 	queryTag     *string
 	settings     []setting
@@ -139,6 +156,17 @@ func (c *config) set(key, value string) error {
 		c.oauthTimeout = time.Duration(seconds * float64(time.Second))
 	case key == OptionOAuthBrowser:
 		c.browser = value
+	case key == OptionOAuthShareSignIn:
+		switch strings.ToLower(value) {
+		case "true", "1":
+			c.shareSignIn = true
+		case "false", "0", "":
+			c.shareSignIn = false
+		default:
+			return invalidArgument("invalid value %q for %s: expected true or false", value, key)
+		}
+	case key == OptionOAuthSignInKey:
+		c.signInKey = value
 	case key == OptionSessionTag:
 		c.sessionTag = &value
 	case key == OptionQueryTag:
@@ -169,6 +197,10 @@ func (c *config) get(key string) (string, error) {
 		return strconv.FormatFloat(c.oauthTimeout.Seconds(), 'g', -1, 64), nil
 	case key == OptionOAuthBrowser:
 		return c.browser, nil
+	case key == OptionOAuthShareSignIn:
+		return strconv.FormatBool(c.shareSignIn), nil
+	case key == OptionOAuthSignInKey:
+		return c.signInKey, nil
 	case key == OptionSessionTag && c.sessionTag != nil:
 		return *c.sessionTag, nil
 	case key == OptionQueryTag && c.queryTag != nil:

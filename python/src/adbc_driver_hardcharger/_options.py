@@ -20,6 +20,12 @@ class DatabaseOptions(enum.Enum):
     OAUTH_TIMEOUT_SECONDS = "adbc.hardcharger.oauth.timeout_seconds"
     #: Command that opens the sign-in page (URL appended); "none" prints the URL instead.
     OAUTH_BROWSER = "adbc.hardcharger.oauth.browser"
+    #: "true": share one browser sign-in among this process's databases that sign in to the
+    #: same server (same sign-in server, TLS trust and SIGN_IN_KEY); "false" (the default):
+    #: each database signs in on its own.
+    OAUTH_SHARE_SIGN_IN = "adbc.hardcharger.oauth.share_sign_in"
+    #: Names a shared sign-in (default ""): databases share one only when their keys match.
+    OAUTH_SIGN_IN_KEY = "adbc.hardcharger.oauth.sign_in_key"
     #: A JSON object tagging every session (hardcharger.session_tag).
     SESSION_TAG = "adbc.hardcharger.session_tag"
     #: A JSON object recorded with every statement (hardcharger.query_tag).

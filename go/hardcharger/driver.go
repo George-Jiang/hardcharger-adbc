@@ -28,6 +28,7 @@ package hardcharger
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"os"
 	"slices"
@@ -84,6 +85,10 @@ type database struct {
 	warpURI     string            // as handed to the Warp SQL driver
 	warpOptions map[string]string // Warp SQL options seen, for the sign-in's TLS
 	signedIn    bool
+	// shared and sharedToken are the shared sign-in this database took its
+	// token from, when it did not sign in itself (OptionOAuthShareSignIn).
+	shared      *sharedSignIn
+	sharedToken string
 }
 
 // take records Hardcharger's options and translates the URI; it returns the
@@ -168,11 +173,20 @@ func (db *database) Open(ctx context.Context) (adbc.ConnectionWithContext, error
 		return nil, err
 	}
 	inner, err := db.Database.Open(ctx)
+	if err != nil && db.refusedSharedToken(err) {
+		// The server refused a shared token it had not seen from this database
+		// (revoked, or the server restarted with other keys): sign in afresh, once.
+		if err = db.signIn(ctx); err != nil {
+			return nil, err
+		}
+		inner, err = db.Database.Open(ctx)
+	}
 	if err != nil {
 		return nil, err
 	}
 	cnxn := &connection{Connection: inner.(driverbase.Connection)}
 	db.mu.Lock()
+	db.shared, db.sharedToken = nil, "" // the server took it: this database is signed in for good
 	cfg := *db.cfg
 	cfg.settings = append([]setting(nil), db.cfg.settings...)
 	db.mu.Unlock()
@@ -186,10 +200,15 @@ func (db *database) Open(ctx context.Context) (adbc.ConnectionWithContext, error
 func (db *database) signIn(ctx context.Context) error {
 	db.mu.Lock()
 	defer db.mu.Unlock()
+	if db.cfg.shareSignIn && db.cfg.authType != AuthTypeExternal {
+		return invalidArgument("%s shares a browser sign-in: it needs %s=%s", OptionOAuthShareSignIn,
+			OptionAuthType, AuthTypeExternal)
+	}
 	if db.cfg.authType != AuthTypeExternal || db.signedIn {
 		return nil
 	}
-	target, err := oauthTargetFor(db.cfg, db.warpURI, maps.Clone(db.warpOptions))
+	warpOptions := maps.Clone(db.warpOptions)
+	target, err := oauthTargetFor(db.cfg, db.warpURI, warpOptions)
 	if err != nil {
 		return err
 	}
@@ -197,8 +216,21 @@ func (db *database) signIn(ctx context.Context) error {
 	if browser == "" {
 		browser = os.Getenv("HARDCHARGER_BROWSER")
 	}
-	token, err := browserSignIn(ctx, target, browser, db.cfg.oauthTimeout)
-	if err != nil {
+	run := func(ctx context.Context) (string, error) {
+		return browserSignIn(ctx, target, browser, db.cfg.oauthTimeout)
+	}
+	var token string
+	db.shared, db.sharedToken = nil, ""
+	if db.cfg.shareSignIn {
+		shared := sharedSignInFor(signInKeyFor(db.warpURI, target, warpOptions, db.cfg.signInKey))
+		var fresh bool
+		if token, fresh, err = shared.get(ctx, run); err != nil {
+			return err
+		}
+		if !fresh {
+			db.shared, db.sharedToken = shared, token
+		}
+	} else if token, err = run(ctx); err != nil {
 		return err
 	}
 	if err := db.Database.SetOption(ctx, optionSubjectToken, token); err != nil {
@@ -206,6 +238,21 @@ func (db *database) signIn(ctx context.Context) error {
 	}
 	db.signedIn = true
 	return nil
+}
+
+// refusedSharedToken reports that opening failed because the server refused
+// a token this database took from a shared sign-in, which it then forgets, so
+// that the next signIn runs a new sign-in.
+func (db *database) refusedSharedToken(err error) bool {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	var adbcErr adbc.Error
+	if db.shared == nil || !errors.As(err, &adbcErr) || adbcErr.Code != adbc.StatusUnauthenticated {
+		return false
+	}
+	db.shared.forget(db.sharedToken)
+	db.shared, db.sharedToken, db.signedIn = nil, "", false
+	return true
 }
 
 // connection wraps the Warp SQL connection.

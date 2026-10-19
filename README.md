@@ -123,7 +123,9 @@ in `go/`). The package is `github.com/gizmodata/hardcharger-adbc/go/hardcharger`
 | `warp://…`, `https://…`, `http://…` | The Warp SQL driver's own spellings, as they are |
 
 `hardcharger://` means exactly what Warp SQL's `warp://` means, so TLS is on unless the URI
-says `?tls=false`. There is deliberately no `hardcharger+http://`: one spelling for plain HTTP
+says `?tls=false`. Pointed at a server that speaks plain HTTP, a TLS URI fails at once, having
+sent nothing but the TLS hello, with `The server at HOST:PORT speaks plain HTTP, not TLS. Add
+?tls=false to the URI to connect without encryption.`; the driver never falls back to plaintext. There is deliberately no `hardcharger+http://`: one spelling for plain HTTP
 keeps URIs the same in every driver (JDBC, the `hardcharger` command-line client), and the
 driver refuses `hardcharger+http://` with a message naming `?tls=false`.
 
@@ -152,6 +154,8 @@ Hardcharger's own:
 | `adbc.hardcharger.oauth.port` | database | The sign-in server's port (default 31339) |
 | `adbc.hardcharger.oauth.timeout_seconds` | database | How long to wait for the sign-in (default 300) |
 | `adbc.hardcharger.oauth.browser` | database | Command that opens the sign-in page (the URL is appended); default `$HARDCHARGER_BROWSER`, else the system's; `none` prints the URL |
+| `adbc.hardcharger.oauth.share_sign_in` | database | `true`: share one browser sign-in among this process's databases that sign in to the same server (see [below](#one-sign-in-for-many-connections)); default `false` |
+| `adbc.hardcharger.oauth.sign_in_key` | database | Names a shared sign-in (default `""`): only databases with the same key share one |
 
 Tags are stored in `_hardcharger_instr.sql_statements.query_tag` and
 `_hardcharger_instr.sessions.session_tag` when the server runs with `--enable-instrumentation`;
@@ -190,6 +194,30 @@ opens it in your browser, waits, and signs in to Warp SQL with the identity prov
 (token exchange). `open_browser=False` (option `oauth.browser=none`) prints the URL instead,
 for a remote shell; a string is the command to open it with. The sign-in server is reached
 over HTTPS when the connection is (no fallback to plain HTTP).
+
+### One sign-in for many connections
+
+Each database signs in on its own, and the DB-API's `connect()` makes a database per
+connection, so a program that opens several connections (dbt, a pool, a notebook) would open a
+browser window for each. `share_sign_in=True` (option `adbc.hardcharger.oauth.share_sign_in`)
+shares one sign-in among the process's databases that sign in to the same server, through the
+same sign-in server, with the same TLS trust:
+
+```python
+for model in ("orders", "customers", "rollups"):
+    with hardcharger.connect(uri="hardcharger://db.example.com", auth_type="external",
+                             share_sign_in=True) as conn:   # one browser sign-in for all three
+        ...
+```
+
+The first connection signs in (others opened meanwhile wait for it); the rest reuse its ID
+token, each exchanging it for an access token of its own, until shortly before the ID token
+expires (a minute, or a quarter of a shorter lifetime), when the next connection signs in
+again. A shared token the server refuses is dropped and that connection signs in again, once.
+The token lives only in the process's memory and never goes to another server. To sign in as
+two people (or roles) to one server in one process, give each its own key:
+`share_sign_in="alice"` (option `adbc.hardcharger.oauth.sign_in_key`). In Go,
+`hardcharger.ForgetSharedSignIns()` drops them all, for a sign-out.
 
 ## 🪪 Client certificate sign-in (mutual TLS)
 

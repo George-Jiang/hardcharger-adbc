@@ -585,6 +585,72 @@ def test_browser_sign_in_with_an_explicit_oauth_url(oauth_server, idp):
         assert conn.current_user() == idp.email
 
 
+class SignInCounter:
+    """A fake browser that counts its sign-ins."""
+
+    def __init__(self, path: pathlib.Path, code: str = "code-ok"):
+        self.path = path
+        self.command = f"{FAKE_BROWSER} --count {path} {code}"
+
+    @property
+    def count(self) -> int:
+        return len(self.path.read_text().splitlines()) if self.path.exists() else 0
+
+
+def _shared_connect(server, counter: SignInCounter, share_sign_in):
+    return hardcharger.connect(
+        uri=server.uri,
+        auth_type="external",
+        oauth_port=server.oauth_port,
+        open_browser=counter.command,
+        oauth_timeout=30,
+        share_sign_in=share_sign_in,
+    )
+
+
+def test_shared_browser_sign_in_signs_in_once(oauth_server, idp, tmp_path):
+    """dbt's pattern: a connection (a database of its own) after another, each closed before
+    the next opens; they share one sign-in. The key is the test's own: the driver's sign-ins
+    live as long as the process, which runs the other tests too."""
+    counter = SignInCounter(path=tmp_path / "count")
+    for _ in range(5):
+        with _shared_connect(server=oauth_server, counter=counter, share_sign_in=True) as conn:
+            assert conn.current_user() == idp.email
+    assert counter.count == 1
+
+
+def test_shared_browser_sign_in_from_threads(oauth_server, idp, tmp_path):
+    import concurrent.futures
+
+    counter = SignInCounter(path=tmp_path / "count")
+
+    def work(_):
+        with _shared_connect(server=oauth_server, counter=counter, share_sign_in="threads") as conn:
+            return conn.current_user()
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+        users = list(pool.map(work, range(6)))
+    assert users == [idp.email] * 6
+    assert counter.count == 1
+
+
+def test_shared_browser_sign_in_is_per_key(oauth_server, idp, tmp_path):
+    counter = SignInCounter(path=tmp_path / "count")
+    for key in ("per-key-a", "per-key-a", "per-key-b", "per-key-b"):
+        with _shared_connect(server=oauth_server, counter=counter, share_sign_in=key) as conn:
+            assert conn.current_user() == idp.email
+    assert counter.count == 2
+
+
+def test_unshared_browser_sign_in_twin(oauth_server, idp, tmp_path):
+    """Without share_sign_in, every connection signs in on its own."""
+    counter = SignInCounter(path=tmp_path / "count")
+    for _ in range(3):
+        with _shared_connect(server=oauth_server, counter=counter, share_sign_in=False) as conn:
+            assert conn.current_user() == idp.email
+    assert counter.count == 3
+
+
 # --- the ADBC driver manifest: other languages load the same library by name ----------------
 
 

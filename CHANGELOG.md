@@ -13,6 +13,22 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- One browser sign-in for many connections: `adbc.hardcharger.oauth.share_sign_in=true` (Python
+  `connect(auth_type="external", share_sign_in=True)`) shares a browser sign-in among the
+  process's databases that sign in to the same server, through the same sign-in server, with the
+  same TLS trust and the same `adbc.hardcharger.oauth.sign_in_key` (Python: `share_sign_in="name"`).
+  The first to open a connection signs in and concurrent ones wait for it; the rest reuse its ID
+  token (each exchanging it for its own access token) until a minute (or a quarter of a shorter
+  lifetime) before it expires, then the next one signs in again; a shared token the server refuses
+  is dropped and that database signs in again, once. Go: `ForgetSharedSignIns()`. One `dbt run`
+  opened a browser window per connection (five for one model); dbt-hardcharger had to share a
+  driver-manager database through `adbc_driver_manager` internals instead. Sharing needs
+  `auth_type=external` and is refused otherwise. Live tests (Go, Python) against
+  `hardcharger-server` with a mock identity provider: 5 sequential and 8 (Go) or 6 (Python, from
+  threads) concurrent connections sign in once; without sharing each signs in; another key or
+  server signs in separately; a token close to its expiry is not handed out and the next
+  connection signs in again; a refused token is replaced (and a failed sign-in after it fails,
+  with no loop).
 - Client certificate sign-in (mutual TLS, Warp SQL §4.4): `adbc.hardcharger.auth_type=client_certificate`
   (also `mtls`), Python `connect(auth_type="client_certificate", tls_client_cert=..., tls_client_key=...)`.
   It is the Warp SQL driver's `adbc.warp.auth.type`: the certificate is the credential, the token is
@@ -26,12 +42,27 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
-- Built on warp-sql-adbc `b74dfe2` (client certificate sign-in), from `b3d2ab8`.
+- Built on warp-sql-adbc `56483f5` (fix/driver-polish: the plain-HTTP hint and best-effort close),
+  from `b74dfe2` (client certificate sign-in), from `b3d2ab8`.
+
+### Fixed
+
+- A TLS URI (`hardcharger://`, the default) pointed at a server that speaks plain HTTP failed with
+  Go's "server gave HTTP response to HTTPS client". It now fails at once with the `hardcharger`
+  CLI's hint, in the driver's terms: `The server at HOST:PORT speaks plain HTTP, not TLS. Add
+  ?tls=false to the URI to connect without encryption.` (status `IO`); only the TLS hello is sent,
+  no credential (live tests record the bytes through a TCP proxy), and nothing falls back to
+  plaintext. The browser sign-in says the same of a plain-HTTP sign-in server (with
+  `adbc.hardcharger.oauth.url` given: use an `http://` URL there), before opening any browser.
+- Closing a connection after the server stopped raised an error, and in Python left the
+  database handle open. Ending the session is best-effort now (at most 5 s; a stopped or hung
+  server is not an error) and Close always releases the driver's handles. Live tests stop the
+  server, then close statements (prepared, and with a result being read), connections and the
+  database: no error, no leaked goroutine (goleak), no Arrow memory left, and in Python the
+  driver-manager handles closed.
 
 - Python 3.11 is the minimum (`requires-python = ">=3.11"`): pyarrow 26, the floor,
   needs 3.11, so on 3.10 the package could never be installed.
-
-### Fixed
 
 - In Go, Warp SQL options set on a database after it was created (`db.SetOption`,
   `db.SetOptions`, e.g. `adbc.warp.retry.max_attempts`) were refused as unknown: they went to

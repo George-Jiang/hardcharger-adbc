@@ -102,6 +102,39 @@ class TestConnectOptions:
             hardcharger.connect(uri="hardcharger://h", auth_type="external", password="p")
         mock_db.assert_not_called()
 
+    @pytest.mark.parametrize(
+        argnames=("share_sign_in", "expected"),
+        argvalues=[
+            (True, {"adbc.hardcharger.oauth.share_sign_in": "true"}),
+            (
+                "alice",
+                {
+                    "adbc.hardcharger.oauth.share_sign_in": "true",
+                    "adbc.hardcharger.oauth.sign_in_key": "alice",
+                },
+            ),
+            (False, {}),
+        ],
+    )
+    def test_share_sign_in(self, mock_db, mock_conn, mock_cls, share_sign_in, expected):
+        hardcharger.connect(
+            uri="hardcharger://h", auth_type="external", share_sign_in=share_sign_in
+        )
+        assert _db_kwargs(mock_db=mock_db) == {
+            "uri": "hardcharger://h",
+            "adbc.hardcharger.auth_type": "external",
+            **expected,
+        }
+
+    def test_share_sign_in_needs_external_auth(self, mock_db, mock_conn, mock_cls):
+        with pytest.raises(expected_exception=ValueError, match="needs auth_type='external'"):
+            hardcharger.connect(
+                uri="hardcharger://h", username="u", password="p", share_sign_in=True
+            )
+        with pytest.raises(expected_exception=TypeError, match="a bool or a str"):
+            hardcharger.connect(uri="hardcharger://h", auth_type="external", share_sign_in=1)
+        mock_db.assert_not_called()
+
     def test_bad_tag_type(self, mock_db, mock_conn, mock_cls):
         with pytest.raises(expected_exception=TypeError, match="a tag must be a mapping"):
             hardcharger.connect(uri="hardcharger://h", query_tag=42)

@@ -60,6 +60,7 @@ var openBrowser = func(command, url string) error {
 type oauthTarget struct {
 	baseURL   string
 	tlsConfig *tls.Config
+	explicit  bool // baseURL is OptionOAuthURL, not derived from the uri
 }
 
 func oauthTargetFor(cfg *config, warpURI string, warpOptions map[string]string) (oauthTarget, error) {
@@ -86,7 +87,37 @@ func oauthTargetFor(cfg *config, warpURI string, warpOptions map[string]string) 
 	if strings.EqualFold(warpOptions["adbc.warp.tls.skip_verify"], "true") {
 		tlsConfig.InsecureSkipVerify = true //nolint:gosec // asked for explicitly (development)
 	}
-	return oauthTarget{baseURL: base, tlsConfig: tlsConfig}, nil
+	return oauthTarget{baseURL: base, tlsConfig: tlsConfig, explicit: cfg.oauthURL != ""}, nil
+}
+
+// speaksPlainHTTP reports a TLS handshake that the server answered with plain
+// HTTP (only the TLS hello was sent).
+func speaksPlainHTTP(err error) bool {
+	if errors.Is(err, http.ErrSchemeMismatch) {
+		return true
+	}
+	var record tls.RecordHeaderError
+	return errors.As(err, &record) && string(record.RecordHeader[:]) == "HTTP/"
+}
+
+// plainHTTPSignInError is the error for a sign-in server reached over TLS that
+// speaks plain HTTP, worded as the Warp SQL driver's for the server itself. The
+// driver never falls back to plaintext by itself.
+func plainHTTPSignInError(target oauthTarget) error {
+	host := target.baseURL
+	if u, err := url.Parse(target.baseURL); err == nil {
+		port := u.Port()
+		if port == "" {
+			port = "443"
+		}
+		host = net.JoinHostPort(u.Hostname(), port)
+	}
+	advice := "Add ?tls=false to the URI"
+	if target.explicit {
+		advice = "Use an http:// URL in " + OptionOAuthURL
+	}
+	return oauthError(adbc.StatusIO, "The server at %s speaks plain HTTP, not TLS. %s to connect without encryption.",
+		host, advice)
 }
 
 func oauthError(code adbc.Status, format string, args ...any) error {
@@ -122,6 +153,9 @@ func browserSignIn(ctx context.Context, target oauthTarget, browser string, time
 	}
 
 	status, flow, err := get("/oauth/initiate")
+	if err != nil && speaksPlainHTTP(err) {
+		return "", plainHTTPSignInError(target)
+	}
 	if err != nil {
 		return "", oauthError(adbc.StatusIO, "could not reach Hardcharger's sign-in server at %s: %v", target.baseURL, err)
 	}

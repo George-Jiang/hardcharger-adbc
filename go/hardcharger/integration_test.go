@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -289,6 +290,7 @@ type mockIdP struct {
 	key       *rsa.PrivateKey
 	validCode string
 	email     string
+	lifetime  atomic.Int64 // of the ID tokens it signs, in seconds
 }
 
 func newMockIdP(t *testing.T) *mockIdP {
@@ -297,6 +299,7 @@ func newMockIdP(t *testing.T) *mockIdP {
 		t.Fatal(err)
 	}
 	idp := &mockIdP{key: key, validCode: "code-ok", email: "analyst@gizmodata.com"}
+	idp.lifetime.Store(300)
 	idp.server = httptest.NewUnstartedServer(http.HandlerFunc(idp.serve))
 	idp.server.Start() // after the assignment: the handler reads idp.server
 	t.Cleanup(idp.server.Close)
@@ -336,7 +339,7 @@ func (idp *mockIdP) idToken() string {
 	b64 := func(v any) string { data, _ := json.Marshal(v); return base64.RawURLEncoding.EncodeToString(data) }
 	now := time.Now().Unix()
 	unsigned := b64(map[string]string{"alg": "RS256", "kid": "k1", "typ": "JWT"}) + "." + b64(map[string]any{
-		"iss": idp.server.URL, "aud": oauthAudience, "sub": idp.email, "email": idp.email, "iat": now, "exp": now + 300})
+		"iss": idp.server.URL, "aud": oauthAudience, "sub": idp.email, "email": idp.email, "iat": now, "exp": now + idp.lifetime.Load()})
 	digest := sha256.Sum256([]byte(unsigned))
 	signature, _ := rsa.SignPKCS1v15(rand.Reader, idp.key, crypto.SHA256, digest[:])
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature)
