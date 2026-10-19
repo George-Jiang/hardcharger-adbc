@@ -39,8 +39,9 @@ every language at once:
   "Hardcharger", comes from the server);
 - 🧩 **a driver manifest**, so `driver = "hardcharger"` finds it in any ADBC driver manager.
 
-> **Status: in development, unreleased (0.1.0).** Built on warp-sql-adbc `b74dfe2`; tested
-> against `hardcharger-server` built from Hardcharger's main branch (`ebe942f`).
+> **Status: in development, unreleased (0.1.0).** Speaks the Warp SQL protocol 1.0.0, built on
+> warp-sql-adbc `b8f6cdd`; tested against `hardcharger-server` built from Hardcharger's
+> `spec/v1.0` branch (`b4c813b`).
 
 | Package | What it is |
 |---|---|
@@ -159,6 +160,18 @@ Tags are stored in `_hardcharger_instr.sql_statements.query_tag` and
 `_hardcharger_instr.sessions.session_tag` when the server runs with `--enable-instrumentation`;
 a tag that isn't a JSON object is refused with `Invalid JSON for query_tag`.
 
+`adbc.warp.session.transaction` (read-only, connection; Python
+`ConnectionOptions.SESSION_TRANSACTION`) is the session's transaction as the server reports it:
+`none`, `open`, `aborted`, or `unknown`. It sees SQL `BEGIN` and `COMMIT` too.
+
+Errors carry the server's error code in the detail `warp.code` (`sql_error`,
+`permission_denied`, ...), or a code beginning with `client_` for a failure the driver found
+in the server's answer (`client_protocol_error`; `client_http_error` for an error status
+without a problem document, such as a proxy's page). `warp.reason` and `warp.cancel_reason`
+say why a token or session stopped working or a statement was cancelled (`token_revoked`,
+`killed`, ...). After `token_revoked`, `credentials_changed` or `principal_dropped` the driver
+does not sign in again on its own.
+
 ## 🐍 Python helpers
 
 ```python
@@ -257,8 +270,8 @@ a user name, password or token beside `client_certificate`, a missing certificat
 plain HTTP before sending anything, and a server that doesn't offer certificate sign-in
 (capability `mtls_identity`) before trying it. The server's refusals carry its code in
 `warp.code`: `unknown_certificate_identity`, `certificate_mismatch` (a token bound to another
-certificate), `client_certificate_required`, `certificate_revoked`, and
-`certificate_identity_mismatch`.
+certificate), `certificate_required` (also when the server refuses a connection without a
+certificate at the TLS handshake), `certificate_revoked`, and `certificate_identity_mismatch`.
 
 ## 🧩 Driver manifest
 

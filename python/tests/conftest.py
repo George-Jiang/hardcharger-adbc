@@ -4,7 +4,8 @@ Integration tests (marked ``integration``) run against real ``hardcharger-server
 started from ``HARDCHARGER_ADBC_TEST_SERVER_BINARY`` on free loopback ports, each with a fresh
 admin password containing ``:`` and ``@``. Without the variable they fail; they never skip.
 The servers get a clean environment: no ``HARDCHARGER_*`` variable from the shell running the
-tests reaches them, so a developer's real settings or credentials can't leak in.
+tests reaches them, so a developer's real settings or credentials can't leak in, and each
+has a ``HOME`` of its own (its work directory), never the user's.
 """
 
 from __future__ import annotations
@@ -131,7 +132,11 @@ def start_server(workdir: Path, extra_args: list[str] | None = None) -> Server:
                 f"SET secret_directory = '{(workdir / 'secrets').as_posix()}'",
                 *extra_args,
             ],
-            env={**clean_environment(), "HARDCHARGER_ADMIN_PASSWORD": password},
+            env={
+                **clean_environment(),
+                "HARDCHARGER_ADMIN_PASSWORD": password,
+                "HOME": str(workdir),
+            },
             cwd=workdir,
             stdout=out,
             stderr=subprocess.STDOUT,

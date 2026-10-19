@@ -62,6 +62,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     do_GET = do_POST = do_PUT = do_DELETE = do_PATCH = forward
 
 
-server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+class Server(http.server.ThreadingHTTPServer):
+    # The default listen backlog (5) is smaller than the connections a partitioned ingest
+    # opens at once (8 parts); on macOS the overflow was reset mid-upload and the driver sent
+    # that part again, so the test counted 9 part requests.
+    request_queue_size = 64
+
+
+server = Server(("127.0.0.1", 0), Handler)
 print(server.server_address[1], flush=True)
 server.serve_forever()

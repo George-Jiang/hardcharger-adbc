@@ -118,6 +118,8 @@ func ingest(t *testing.T, cnxn adbc.ConnectionWithContext, table string) {
 	for _, b := range batches {
 		b.Release()
 	}
+	// The shared server outlives a test: start clean, so the suite can run with -count.
+	execUpdate(t, cnxn, "DROP TABLE IF EXISTS "+table)
 	stmt, err := cnxn.NewStatement(ctx)
 	if err != nil {
 		t.Fatal(err)

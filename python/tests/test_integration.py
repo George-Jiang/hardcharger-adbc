@@ -280,6 +280,39 @@ def test_client_certificate_sign_in_off_on_the_server(tmp_path, mtls_certs):
         stop_server(server=server)
 
 
+def test_no_client_certificate_is_certificate_required(mtls_server, mtls_certs):
+    # The server refuses the handshake (TLS alert certificate_required): that is the refusal
+    # certificate_required, not an unreachable server. The twin, a password sign-in over a
+    # certificate, is test_client_certificate_sign_in_off_on_the_server.
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+        hardcharger.connect(
+            uri=mtls_server.uri,
+            username=USERNAME,
+            password=mtls_server.password,
+            tls_root_certs=mtls_certs["ca"],
+        )
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.UNAUTHENTICATED
+    assert warp_code(error=error.value) == "certificate_required"
+
+
+# --- sessions ------------------------------------------------------------------------------
+
+
+def test_session_transaction_is_the_servers(conn):
+    # The server's view of the session's transaction, which sees SQL BEGIN and ROLLBACK.
+    def transaction() -> str:
+        return conn.adbc_connection.get_option(
+            key=hardcharger.ConnectionOptions.SESSION_TRANSACTION.value
+        )
+
+    assert transaction() == "none"
+    with conn.cursor() as cur:
+        cur.execute(operation="BEGIN TRANSACTION")
+        assert transaction() == "open"
+        cur.execute(operation="ROLLBACK")
+    assert transaction() == "none"
+
+
 # --- settings ------------------------------------------------------------------------------
 
 

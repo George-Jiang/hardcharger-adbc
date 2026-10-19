@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Warp SQL protocol 1.0.0**, through warp-sql-adbc `b8f6cdd` (needs a Hardcharger server that
+  speaks 1.0.0, from its `spec/v1.0` branch; the driver has no fallbacks for the draft's names).
+  What changes for Hardcharger users: a server that requires client certificates and gets a
+  connection without one is the refusal `certificate_required` (`UNAUTHENTICATED`; it was
+  `client_certificate_required`, or an unreachable server, `IO`); codes the driver makes up
+  start with `client_` (`client_protocol_error`, and `client_http_error` for an error status
+  without a problem document); errors carry `warp.reason` / `warp.cancel_reason` when the server
+  gave one; after `invalid_token` with `token_revoked`, `credentials_changed` or
+  `principal_dropped` the driver no longer signs in again on its own; a statement cancelled by
+  the time the server answers is `CANCELLED`; unknown states and reasons are accepted (§12); a
+  partitioned ingest commits with `part_count`; `adbc.warp.statement.query_tag` is sent compact
+  and ASCII-escaped, at most 4,096 bytes. The README names the codes.
 - Browser sign-in (`auth_type=external`) is Warp SQL's (spec §4.3), on the server's own port and
   URL, run by the Warp SQL driver (`warpsql.BrowserSignIn`, warp-sql-adbc 6ee3a73): the driver
   creates a flow, opens the identity provider's page, polls the flow with its secret and gets
@@ -34,6 +46,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `adbc.warp.session.transaction` (read-only, connection; Python
+  `ConnectionOptions.SESSION_TRANSACTION`): the session's transaction as the server reports it
+  (`none`, `open`, `aborted`, `unknown`), which sees SQL `BEGIN` and `ROLLBACK` too. Live tests
+  (Go, Python) for it and for `certificate_required` at the handshake; both fail with the
+  previous warp-sql-adbc.
+- The live-test servers (Go and Python) run with a `HOME` of their own. The Python ingest tests'
+  recording proxy listens with a backlog of 64: with the default 5, on macOS, a part upload was
+  sometimes reset and sent again, and the request count came out one too high (about 1 run in
+  10 under load; 0 in 120 after). The Go ingest tests drop their table first, so the live suite
+  runs with `-count`.
 - One browser sign-in for many connections: `adbc.hardcharger.oauth.share_sign_in=true` (Python
   `connect(auth_type="external", share_sign_in=True)`) shares a browser sign-in among the
   process's databases that sign in to the same server, through the same sign-in server, with the

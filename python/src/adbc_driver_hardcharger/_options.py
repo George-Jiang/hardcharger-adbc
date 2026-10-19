@@ -71,6 +71,10 @@ class ConnectionOptions(enum.Enum):
     SESSION_ID = "adbc.warp.session.id"
     #: How often the connection's session was lost and replaced.
     SESSION_REPLACEMENTS = "adbc.warp.session.replacements"
+    #: The session's transaction as the server reports it (read-only): "none", "open",
+    #: "aborted", or "unknown" (a value the driver doesn't know). It sees SQL ``BEGIN`` and
+    #: ``COMMIT`` too. Reading it costs a request.
+    SESSION_TRANSACTION = "adbc.warp.session.transaction"
 
 
 class StatementOptions(enum.Enum):
@@ -83,7 +87,8 @@ class StatementOptions(enum.Enum):
     RETAIN_RESULT = "adbc.warp.statement.retain_result"
     #: Seconds after which the server cancels a statement.
     TIMEOUT_SECONDS = "adbc.warp.statement.timeout_seconds"
-    #: A JSON object recorded with every statement on the server.
+    #: A JSON object recorded with every statement and ingest on the server
+    #: (``Warp-Query-Tag``): sent compact and in ASCII, at most 4,096 bytes so.
     QUERY_TAG = "adbc.warp.statement.query_tag"
     #: Arrow buffer compression for results and uploads: "zstd" or "none".
     IPC_COMPRESSION = "adbc.warp.ipc_compression"

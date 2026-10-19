@@ -6,7 +6,8 @@
 // HARDCHARGER_ADBC_TEST_SERVER_BINARY on free loopback ports, with a fresh
 // admin password containing ':' and '@'. Without it they fail; they never
 // skip, and a run in which no integration test ran fails too. The servers get
-// a clean environment: no HARDCHARGER_* variable of the shell reaches them.
+// a clean environment: no HARDCHARGER_* variable of the shell reaches them,
+// and each has a HOME of its own (its test directory), never the user's.
 //
 //	HARDCHARGER_ADBC_TEST_SERVER_BINARY=/path/to/hardcharger-server go test -race -tags integration ./...
 
@@ -105,7 +106,7 @@ func freePort() (int, error) {
 func cleanEnvironment() []string {
 	var env []string
 	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "HARDCHARGER_") {
+		if !strings.HasPrefix(kv, "HARDCHARGER_") && !strings.HasPrefix(kv, "HOME=") {
 			env = append(env, kv)
 		}
 	}
@@ -137,7 +138,7 @@ func launchServer(extraArgs []string) (*testServer, error) {
 	}
 	server.cmd = exec.Command(os.Getenv(serverBinaryEnv), append(args, extraArgs...)...)
 	server.cmd.Dir = dir
-	server.cmd.Env = append(cleanEnvironment(), "HARDCHARGER_ADMIN_PASSWORD="+server.password)
+	server.cmd.Env = append(cleanEnvironment(), "HARDCHARGER_ADMIN_PASSWORD="+server.password, "HOME="+dir)
 	server.cmd.Stdout, server.cmd.Stderr = server.log, server.log
 	if err := server.cmd.Start(); err != nil {
 		return nil, err
