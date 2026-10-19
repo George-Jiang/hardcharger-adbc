@@ -94,6 +94,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A user's SQL that failed while running (`execution_error`, HTTP 422: a division by zero, a failed
+  conversion, `error()`) was ADBC status `INTERNAL`, so Python raised `InternalError`, which says
+  the driver or server is broken. It is now `INVALID_ARGUMENT` (`ProgrammingError`), like a SQL
+  error before it runs; a violated constraint (SQLSTATE `23000`) is `INTEGRITY` (`IntegrityError`).
+  Built on warp-sql-adbc `15ff049` (fix/adbc-error-status), which maps every Warp SQL error code to
+  an ADBC status. Live Go and Python tests check the status and DB-API class of a division by
+  zero, a conversion, a failure mid-stream, a syntax error, an unknown table, a duplicate key, a
+  cancel (`OperationalError`), a timeout (`OperationalError`) and a wrong password
+  (`UNAUTHENTICATED`).
 - A TLS URI (`hardcharger://`, the default) pointed at a server that speaks plain HTTP failed with
   Go's "server gave HTTP response to HTTPS client". It now fails at once with the `hardcharger`
   CLI's hint, in the driver's terms: `The server at HOST:PORT speaks plain HTTP, not TLS. Add
