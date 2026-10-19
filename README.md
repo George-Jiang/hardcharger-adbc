@@ -1,6 +1,9 @@
 <p align="center">
   <a href="https://github.com/gizmodata/hardcharger">
-    <img src="docs/assets/hardcharger-adbc-banner.svg" alt="Hardcharger™ ADBC: one native driver for every ADBC language. By GizmoData™." width="100%">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hardcharger-banner-dark.png">
+      <img src="docs/assets/hardcharger-banner-light.png" alt="Hardcharger™" width="400">
+    </picture>
   </a>
 </p>
 
