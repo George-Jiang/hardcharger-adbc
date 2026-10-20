@@ -464,15 +464,15 @@ func TestIngestPartsIsTheWarpOption(t *testing.T) {
 	// The Warp SQL driver validates it, under either name; the twin is above.
 	_, err = newDB(t, map[string]string{adbc.OptionKeyURI: "hardcharger://h", OptionIngestParts: "none"})
 	wantStatus(t, err, adbc.StatusInvalidArgument, warpIngestParts)
-	// Unset, it is the Warp SQL driver's default: 8.
+	// Unset, it is the Warp SQL driver's default: auto (16 parts on a near link, 32 on a far one).
 	db, err = newDB(t, map[string]string{adbc.OptionKeyURI: "hardcharger://h"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, err := db.GetOption(ctx, OptionIngestParts); err != nil || got != "8" {
+	if got, err := db.GetOption(ctx, OptionIngestParts); err != nil || got != "auto" {
 		t.Errorf("default ingest parts %q, %v", got, err)
 	}
-	if got, err := db.GetOption(ctx, "adbc.warp.statement.result_partitions"); err != nil || got != "8" {
+	if got, err := db.GetOption(ctx, "adbc.warp.statement.result_partitions"); err != nil || got != "32" {
 		t.Errorf("default result partitions %q, %v", got, err)
 	}
 }

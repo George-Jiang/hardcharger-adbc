@@ -22,8 +22,8 @@ import (
 )
 
 // The driver inherits the Warp SQL driver's defaults: a large result is split
-// into up to 8 partitions, and an upload of two batches or more goes in up to
-// 8 parts (§6.10, §8.3).
+// into up to 32 partitions, and an upload of two batches or more goes in up to
+// 16 parts on a near link, 32 on a far one (`auto`; §6.10, §8.3).
 
 // partitionCount runs sql with ExecutePartitions and returns how many
 // partitions the server split its result into.
@@ -48,8 +48,8 @@ func partitionCount(t *testing.T, cnxn adbc.ConnectionWithContext, sql string) u
 const largeResult = "SELECT i, i * 2 AS j FROM range(2000000) t(i)"
 
 func TestIntegrationALargeResultIsSplitByDefault(t *testing.T) {
-	if n := partitionCount(t, mustOpen(t, shared, nil), largeResult); n < 2 || n > 8 {
-		t.Fatalf("%d partitions, want 2 to 8 (the default asks for up to 8)", n)
+	if n := partitionCount(t, mustOpen(t, shared, nil), largeResult); n < 2 || n > 32 {
+		t.Fatalf("%d partitions, want 2 to 32 (the default asks for up to 32)", n)
 	}
 	// The twin: one partition when asked for one.
 	cnxn := mustOpen(t, shared, map[string]string{"adbc.warp.statement.result_partitions": "1"})
@@ -153,8 +153,8 @@ func proxiedOpen(t *testing.T, extra map[string]string) (*recordingProxy, adbc.C
 func TestIntegrationAnIngestGoesInPartsByDefault(t *testing.T) {
 	proxy, cnxn := proxiedOpen(t, nil)
 	ingest(t, cnxn, "default_parts")
-	if single, opens, parts := proxy.ingestRequests(); single != 0 || opens != 1 || parts < 2 || parts > 8 {
-		t.Fatalf("%d single, %d opens, %d parts; want one partitioned ingest of 2 to 8 parts", single, opens, parts)
+	if single, opens, parts := proxy.ingestRequests(); single != 0 || opens != 1 || parts < 2 || parts > 32 {
+		t.Fatalf("%d single, %d opens, %d parts; want one partitioned ingest of 2 to 32 parts", single, opens, parts)
 	}
 }
 

@@ -947,7 +947,7 @@ LARGE_RESULT = "SELECT i, i * 2 AS j FROM range(2000000) t(i)"
 def test_a_large_result_is_split_by_default(conn):
     with conn.cursor() as cur:
         partitions, _ = cur.adbc_execute_partitions(operation=LARGE_RESULT)
-    assert 2 <= len(partitions) <= 8, len(partitions)
+    assert 2 <= len(partitions) <= 32, len(partitions)
 
 
 def test_one_result_partition_when_asked(hc_server):
@@ -1022,7 +1022,7 @@ def test_an_ingest_goes_in_parts_by_default(proxied):
     with connect() as conn:
         ingest_16_batches(conn=conn, table="py_default_parts")
     single, opens, parts = ingest_requests()
-    assert single == 0 and opens == 1 and 2 <= parts <= 8, (single, opens, parts)
+    assert single == 0 and opens == 1 and 2 <= parts <= 32, (single, opens, parts)
 
 
 def test_one_ingest_part_when_asked_by_hardcharger_name(proxied):

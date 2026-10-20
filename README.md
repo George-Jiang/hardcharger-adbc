@@ -28,8 +28,8 @@ The [ADBC](https://arrow.apache.org/adbc/) driver for
 [Hardcharger™](https://github.com/gizmodata/hardcharger), GizmoData™'s DuckDB 2.0 server. It is
 a native Go driver built on the generic [Warp SQL ADBC driver](https://github.com/gizmodata/warp-sql-adbc),
 which does the work (Arrow IPC streaming, bind parameters, cancel, retries, TLS, and by
-default results split into up to 8 partitions read at once and bulk ingests sent in up to 8
-parts), compiled to one C shared library, `libadbc_driver_hardcharger`, that
+default results split into up to 32 partitions read at once and bulk ingests sent in up to
+16 or 32 parts), compiled to one C shared library, `libadbc_driver_hardcharger`, that
 every ADBC language loads. On top of Warp SQL it adds what is particular to Hardcharger, for
 every language at once:
 
@@ -43,8 +43,8 @@ every language at once:
 - 🧩 **a driver manifest**, so `driver = "hardcharger"` finds it in any ADBC driver manager.
 
 > **Status: in development, unreleased (0.1.0).** Speaks the Warp SQL protocol 1.0.0, built on
-> warp-sql-adbc `b8f6cdd`; tested against `hardcharger-server` built from Hardcharger's
-> `spec/v1.0` branch (`b4c813b`).
+> warp-sql-adbc `a81c326`; tested against `hardcharger-server` 2.0.0-rc.1 (the
+> `ghcr.io/gizmodata/hardcharger:main` image).
 
 | Package | What it is |
 |---|---|
@@ -141,8 +141,8 @@ throughput, and the driver keeps the Warp SQL driver's defaults:
 
 | Option | Default | Meaning |
 |---|---|---|
-| `adbc.warp.statement.result_partitions` | 8 | A large result is split into up to this many partitions, read at once over their own connections (the server decides; a result of fewer than two batches is one stream). `1`: never split |
-| `adbc.warp.ingest.parts` (also `adbc.hardcharger.ingest.parts`) | 8 | A bulk ingest of two batches or more goes over up to this many connections, committed as one. Its rows land in no defined order; `1`: one stream, in the upload's order |
+| `adbc.warp.statement.result_partitions` | 32 | A large result is split into up to this many partitions, read at once over their own connections (the server decides; a result of fewer than two batches is one stream). `1`: never split |
+| `adbc.warp.ingest.parts` (also `adbc.hardcharger.ingest.parts`) | `auto` | A bulk ingest of two batches or more goes over up to this many connections, committed as one. Its rows land in no defined order; `1`: one stream, in the upload's order |
 
 Hardcharger's own:
 

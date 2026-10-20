@@ -161,10 +161,10 @@ All notable changes to this project are documented here. The format follows
     on every session (database) or one (connection; read back with GetOption), global
     settings, and browser sign-in (`auth_type=external`, exchanging the identity provider's ID
     token for a Warp SQL access token).
-- The Warp SQL driver's defaults, inherited: a large result is split into up to 8 partitions
+- The Warp SQL driver's defaults, inherited: a large result is split into up to 32 partitions
   read at once (`adbc.warp.statement.result_partitions`), and a bulk ingest of two batches or
-  more goes in up to 8 parts (`adbc.warp.ingest.parts`, also `adbc.hardcharger.ingest.parts`
-  on the database or a connection). Tests count the partitions (`ExecutePartitions`) and the
+  more goes in parts, `auto`: up to 16 on a near link, 32 on a far one (`adbc.warp.ingest.parts`,
+  also `adbc.hardcharger.ingest.parts` on the database or a connection). Tests count the partitions (`ExecutePartitions`) and the
   ingest's part uploads (through a recording proxy), in Go and Python, each with a twin set to 1.
 - The driver manifest for `driver = "hardcharger"` (`packaging/hardcharger.toml.in`,
   `python -m adbc_driver_hardcharger.manifest`), and C and Go examples.
