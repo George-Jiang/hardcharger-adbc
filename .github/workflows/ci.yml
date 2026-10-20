@@ -8,10 +8,11 @@ name: ci
 #     against a server on the default port;
 #   - the library and Python unit tests on macOS and Windows.
 #
-# Access, with no personal token:
-#   - github.com/gizmodata/warp-sql-adbc (internal; a Go module dependency) through the
+# Access, with no personal token, while the pieces this builds on are private (unnecessary once
+# they are public):
+#   - github.com/gizmodata/warp-sql-adbc (a Go module dependency) through the
 #     WARP_SQL_ADBC_DEPLOY_KEY secret, a read-only deploy key of that repository;
-#   - hardcharger-server from the private image ghcr.io/gizmodata/hardcharger, pulled with this
+#   - hardcharger-server from the image ghcr.io/gizmodata/hardcharger, pulled with this
 #     workflow's GITHUB_TOKEN; the package grants this repository read access (package
 #     settings, Manage Actions access).
 
@@ -74,6 +75,9 @@ jobs:
       - name: Go unit tests
         working-directory: go
         run: make test
+      - name: Third-party notices are current (scripts/third_party_notices.sh)
+        if: matrix.python == '3.14'
+        run: scripts/third_party_notices.sh --check
       # Fails without the server, and when no integration test ran.
       - name: Go live suite (race detector)
         if: matrix.python == '3.14'

@@ -42,9 +42,9 @@ every language at once:
   "Hardcharger", comes from the server);
 - 🧩 **a driver manifest**, so `driver = "hardcharger"` finds it in any ADBC driver manager.
 
-> **Status: in development, unreleased (0.1.0).** Speaks the Warp SQL protocol 1.0.0, built on
-> warp-sql-adbc `a81c326`; tested against `hardcharger-server` 2.0.0-rc.1 (the
-> `ghcr.io/gizmodata/hardcharger:main` image).
+> **Status: 2.0.0, released with Hardcharger 2.0.0.** Speaks the Warp SQL protocol 1.0.0, built on
+> [warp-sql-adbc](https://github.com/gizmodata/warp-sql-adbc) 1.0.0; tested against
+> `hardcharger-server` 2.0.0.
 
 | Package | What it is |
 |---|---|
@@ -359,8 +359,8 @@ packaging/           the driver manifest template
 ## 🛠️ Building and testing
 
 Go 1.27 with cgo (and, on Linux, `zig` for the glibc 2.17 build), Python 3.11+. The Warp SQL
-driver is a Go module in an internal repository until launch:
-`GOPRIVATE=github.com/gizmodata/*` with git access to `gizmodata/warp-sql-adbc`.
+driver is the Go module `github.com/gizmodata/warp-sql-adbc/go`, pinned in `go/go.mod`; while
+that repository is private, build with `GOPRIVATE=github.com/gizmodata/*` and git access to it.
 
 ```bash
 scripts/build_lib.sh                       # go/build/libadbc_driver_hardcharger.{so,dylib,dll}
@@ -389,11 +389,17 @@ Pushing a `vX.Y.Z` tag runs every suite on the tagged commit, then builds the li
 amd64/arm64 (glibc 2.17; installed and loaded on Oracle Linux 8), macOS arm64/amd64 and Windows
 amd64/arm64, wheels for all of them but Windows arm64 (pyarrow and adbc-driver-manager publish
 no wheels there), a GitHub Release with the libraries, wheels and manifest template, and PyPI
-from the `pypi` environment (trusted publishing, after an approval).
+from the `pypi` environment (trusted publishing, after an approval). Before tagging: set
+`__version__` in `python/src/adbc_driver_hardcharger/_version.py`, move `[Unreleased]` into a
+dated section, and regenerate `THIRD_PARTY_NOTICES` if a Go dependency moved
+(`scripts/third_party_notices.sh`; CI checks it).
 
 ## 📄 License
 
-Apache License 2.0; see [LICENSE](LICENSE).
+Apache License 2.0; see [LICENSE](LICENSE). The shared library links the Go runtime and the Go
+modules listed, with their licenses, in
+[THIRD_PARTY_NOTICES](python/src/adbc_driver_hardcharger/THIRD_PARTY_NOTICES), which ships in
+every wheel and library tarball.
 
 ---
 

@@ -1,7 +1,7 @@
 name: Read the private Go module
 description: >
-  Lets the Go toolchain fetch github.com/gizmodata/warp-sql-adbc (internal) over SSH with a
-  read-only deploy key of that repository. No personal token.
+  Lets the Go toolchain fetch github.com/gizmodata/warp-sql-adbc over SSH with a read-only
+  deploy key of that repository, while that repository is private. No personal token.
 inputs:
   deploy-key:
     description: The WARP_SQL_ADBC_DEPLOY_KEY secret (private key of a read-only deploy key)
