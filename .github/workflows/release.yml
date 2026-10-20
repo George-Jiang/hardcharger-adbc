@@ -8,6 +8,9 @@ name: release
 # environment, which requires an approval and accepts only v* tags.
 #
 # workflow_dispatch runs the tests and the builds only: the release and publish jobs need a tag.
+#
+# Each release also carries a go/vX.Y.Z tag on the same commit, for the Go module in go/
+# (go-module.yml; RELEASING.md has the order, warp-sql-adbc first). `v*` does not match it.
 
 on:
   push:

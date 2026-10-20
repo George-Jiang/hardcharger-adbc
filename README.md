@@ -51,7 +51,7 @@ every language at once:
 | `pip install adbc-driver-hardcharger` | this driver: Python bindings, with the library in the wheel |
 | `pip install hardcharger` | the Hardcharger **server**, started from Python |
 | `pip install "hardcharger[adbc]"` | both |
-| `go get github.com/gizmodata/hardcharger-adbc/go` | the Go package |
+| `go get github.com/gizmodata/hardcharger-adbc/go` | the Go package (versioned by `go/vX.Y.Z` tags, one per release, on the release's commit) |
 | [Releases](https://github.com/gizmodata/hardcharger-adbc/releases) | the library and the manifest template, for C/C++, R, Rust, ... |
 
 ## 🚀 Quick start
