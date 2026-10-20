@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `connect(subject_token=...)`: sign in with your identity provider's token (an OIDC ID token
+  or another JWT the server trusts), exchanged for a Hardcharger access token (Warp SQL's
+  `token_exchange` grant, option `adbc.warp.auth.subject_token`). It is refused beside
+  `username`, `password`, `access_token`, `auth_type="external"` or `"client_certificate"`
+  (also when the subject token comes through `db_kwargs`: the driver would silently use one
+  credential), and beside a different `db_kwargs` value for the same option.
+- `connect(tls_server_name=...)`: the server's host name for TLS when the URI's host isn't it
+  (an IP address, a tunnel, a load balancer), option `adbc.warp.tls.server_name`. It is sent
+  as the TLS server name (SNI) on every connection, result partitions and ingest parts too,
+  and the certificate is checked against it: GizmoSQL's `tls_override_hostname`. The tests
+  read the SNI off the wire through a recording proxy.
+
 ### Changed
 
 - A shared browser sign-in whose token the server refuses with `token_revoked`,

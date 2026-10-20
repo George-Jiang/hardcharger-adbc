@@ -273,6 +273,59 @@ plain HTTP before sending anything, and a server that doesn't offer certificate 
 certificate), `certificate_required` (also when the server refuses a connection without a
 certificate at the TLS handshake), `certificate_revoked`, and `certificate_identity_mismatch`.
 
+## 🎫 Token exchange (your identity provider's tokens)
+
+A program that already holds a token from your identity provider (an OpenID Connect ID token
+or another JWT: a workload identity, a CI job's token, a token your web app got at sign-in)
+signs in with it directly: the driver exchanges it for a Hardcharger access token (Warp SQL's
+`token_exchange` grant), with no password and no browser. The server checks the token against
+the provider's keys, issuer and audience:
+
+```bash
+HARDCHARGER_ADMIN_PASSWORD=change-me hardcharger-server --tls-cert server.pem --tls-key server-key.pem \
+  --token-jwks-uri https://login.example.com/oauth2/v1/keys \
+  --token-allowed-issuer https://login.example.com --token-allowed-audience hardcharger \
+  --token-authorized-emails '*@example.com' --token-default-role user
+```
+
+```python
+with hardcharger.connect(uri="hardcharger://db.example.com", subject_token=id_token) as conn:
+    print(conn.current_user())  # the token's e-mail address
+```
+
+`subject_token=` is the Warp SQL driver's `adbc.warp.auth.subject_token` (in C, Go and every
+other language, set that option). Python refuses it beside `username`, `password`,
+`access_token`, `auth_type="external"` or `"client_certificate"`, and a different value for the
+same option in `db_kwargs`: the driver would otherwise use one credential and ignore the
+others. A token the server doesn't accept (another issuer or audience, expired, a bad
+signature, an e-mail address outside `--token-authorized-emails`) is refused with
+`UNAUTHENTICATED` and `warp.code` `invalid_credentials`. The driver exchanges the token when
+the first connection opens, and again shortly before Hardcharger's access token expires, as
+long as your provider's token is still valid. Once that token has expired the server refuses
+the next exchange (`invalid_credentials`), so open a new connection with a fresh
+`subject_token`.
+
+## 🏷️ TLS server name
+
+When the URI's host isn't the name on the server's certificate (you connect by IP address, or
+through a tunnel, port forward or load balancer), give the name with `tls_server_name=` (option
+`adbc.warp.tls.server_name`). The driver sends it as the TLS server name (SNI), so a proxy or
+ingress that routes on SNI sends the connection to the right server, and checks the
+certificate against it instead of the URI's host:
+
+```python
+with hardcharger.connect(uri="hardcharger://10.0.0.7", username="hardcharger", password="change-me",
+                         tls_server_name="db.example.com",
+                         tls_root_certs="server-ca.pem") as conn:  # when the server's CA is private
+    print(conn.current_user())
+```
+
+Without it, a connection by IP address sends no server name at all (TLS never carries an IP
+address as one) and the certificate must list that IP address. It is what GizmoSQL's
+`tls_override_hostname` was. Every connection the driver opens (result partitions, ingest
+parts) sends the same name; `tls_skip_verify=True` still sends it, without checking the
+certificate. Python refuses a different value for the same option in `db_kwargs`.
+
 ## 🧩 Driver manifest
 
 `driver = "hardcharger"` works in any ADBC driver manager once `hardcharger.toml` is in one of

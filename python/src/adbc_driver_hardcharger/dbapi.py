@@ -242,6 +242,7 @@ def connect(
     username: Optional[str] = None,
     password: Optional[str] = None,
     access_token: Optional[str] = None,
+    subject_token: Optional[str] = None,
     auth_type: Literal["password", "external", "client_certificate", "mtls"] = "password",
     oauth_timeout: Optional[float] = None,
     open_browser: Union[bool, str] = True,
@@ -253,6 +254,7 @@ def connect(
     tls_root_certs: Optional[PemSource] = None,
     tls_client_cert: Optional[PemSource] = None,
     tls_client_key: Optional[PemSource] = None,
+    tls_server_name: Optional[str] = None,
     catalog: Optional[str] = None,
     db_schema: Optional[str] = None,
     db_kwargs: Optional[dict[str, str]] = None,
@@ -269,6 +271,12 @@ def connect(
         username: User name for password sign-in.
         password: Password for password sign-in.
         access_token: A Hardcharger access token obtained elsewhere.
+        subject_token: An identity provider's token (an OIDC ID token or other JWT the server
+            trusts: ``--token-jwks-uri`` or ``--token-signature-verify-cert-path``, with its
+            issuer and audience) that the driver exchanges for a Hardcharger access token
+            (the ``token_exchange`` grant). Not with ``username``, ``password`` or
+            ``access_token``, nor with ``auth_type`` ``"external"`` or
+            ``"client_certificate"``.
         auth_type: ``"password"`` (default); ``"external"``: sign in through a browser with
             the server's identity provider (``hardcharger-server --oauth-client-id``; the
             server lists the Warp SQL capability ``oauth_browser``); or
@@ -297,6 +305,9 @@ def connect(
         tls_root_certs: CA certificates to trust, as PEM text or a file path.
         tls_client_cert: Client certificate chain for mutual TLS (PEM text or path).
         tls_client_key: The client certificate's private key (PEM text or path).
+        tls_server_name: The server's host name for TLS, when it isn't the URI's (connecting
+            by IP address, or through a tunnel or load balancer): the driver sends it as the
+            TLS server name (SNI) and checks the server's certificate against it.
         catalog: Catalog to make current for the session.
         db_schema: Schema to make current for the session.
         db_kwargs: Extra ADBC database options (``adbc.hardcharger.*``, ``adbc.warp.*``).
@@ -315,11 +326,20 @@ def connect(
             f"invalid auth_type {auth_type!r}: expected 'password', 'external' or "
             "'client_certificate' ('mtls')"
         )
-    if auth_type == "external" and (username or password or access_token):
+    if auth_type == "external" and (username or password or access_token or subject_token):
         raise ValueError(
-            "auth_type='external' signs in through the browser: drop username, password and "
-            "access_token"
+            "auth_type='external' signs in through the browser: drop username, password, "
+            "access_token and subject_token"
         )
+    if subject_token is not None:
+        if not subject_token:
+            raise ValueError("subject_token can't be empty")
+        if auth_type != "password":
+            raise ValueError(
+                f"subject_token signs in by token exchange: drop auth_type={auth_type!r}"
+            )
+    if tls_server_name is not None and not tls_server_name:
+        raise ValueError("tls_server_name can't be empty")
     if not isinstance(share_sign_in, (bool, str)):
         raise TypeError(
             f"share_sign_in must be a bool or a str, not {type(share_sign_in).__name__}"
@@ -335,6 +355,12 @@ def connect(
         if value is not None:
             db_kwargs.setdefault(key, value)
 
+    def put_only(key: str, value: Optional[str], name: str) -> None:
+        """put(), refusing a different value for the same option in db_kwargs."""
+        if value is not None and db_kwargs.get(key, value) != value:
+            raise ValueError(f"{name}= and db_kwargs[{key!r}] disagree: give one of them")
+        put(key=key, value=value)
+
     if uri is not None and uri.startswith("profile://"):
         put(key="profile", value=uri[len("profile://") :])
     else:
@@ -343,6 +369,20 @@ def connect(
     put(key="username", value=username)
     put(key="password", value=password)
     put(key=options.ACCESS_TOKEN.value, value=access_token)
+    put_only(key=options.SUBJECT_TOKEN.value, value=subject_token, name="subject_token")
+    if db_kwargs.get(options.SUBJECT_TOKEN.value):
+        # The driver would pick one credential silently (an access token over the subject
+        # token, the subject token over a password): refuse the mix instead.
+        given = [
+            key
+            for key in ("username", "password", options.ACCESS_TOKEN.value)
+            if db_kwargs.get(key)
+        ]
+        if given:
+            raise ValueError(
+                f"subject_token ({options.SUBJECT_TOKEN.value}) signs in by token exchange: "
+                f"drop {', '.join(given)}"
+            )
     if auth_type != "password":
         put(key=options.AUTH_TYPE.value, value=auth_type)
     put(
@@ -372,6 +412,7 @@ def connect(
     ):
         if value is not None:
             put(key=key, value=_pem(value=value))
+    put_only(key=options.TLS_SERVER_NAME.value, value=tls_server_name, name="tls_server_name")
 
     standard = adbc_driver_manager.ConnectionOptions
     if catalog is not None:

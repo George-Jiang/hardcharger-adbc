@@ -151,6 +151,79 @@ class TestConnectOptions:
         with pytest.raises(expected_exception=ValueError, match="at least one of 'uri' or"):
             hardcharger.connect()
 
+    def test_subject_token(self, mock_db, mock_conn, mock_cls):
+        hardcharger.connect(uri="hardcharger://h", subject_token="eyJ.idp.jwt")
+        assert _db_kwargs(mock_db=mock_db) == {
+            "uri": "hardcharger://h",
+            "adbc.warp.auth.subject_token": "eyJ.idp.jwt",
+        }
+
+    @pytest.mark.parametrize(
+        argnames=("kwargs", "text"),
+        argvalues=[
+            ({"username": "u", "password": "p"}, "drop username, password"),
+            ({"password": "p"}, "drop password"),
+            ({"access_token": "t"}, "drop adbc.warp.auth.access_token"),
+            ({"db_kwargs": {"username": "u"}}, "drop username"),
+            ({"db_kwargs": {"adbc.warp.auth.access_token": "t"}}, "drop adbc.warp.auth.access"),
+            ({"auth_type": "external"}, "signs in through the browser: drop .*subject_token"),
+            ({"auth_type": "mtls"}, "drop auth_type='client_certificate'"),
+            ({"db_kwargs": {"adbc.warp.auth.subject_token": "other"}}, "disagree"),
+        ],
+    )
+    def test_subject_token_refuses_other_credentials(
+        self, mock_db, mock_conn, mock_cls, kwargs, text
+    ):
+        # The driver would pick one of them without a word (an access token wins over the
+        # subject token, the subject token over a password).
+        with pytest.raises(expected_exception=ValueError, match=text):
+            hardcharger.connect(uri="hardcharger://h", subject_token="eyJ.idp.jwt", **kwargs)
+        mock_db.assert_not_called()
+
+    def test_subject_token_in_db_kwargs_refuses_a_password(self, mock_db, mock_conn, mock_cls):
+        with pytest.raises(expected_exception=ValueError, match="drop username, password"):
+            hardcharger.connect(
+                uri="hardcharger://h",
+                username="u",
+                password="p",
+                db_kwargs={"adbc.warp.auth.subject_token": "eyJ.idp.jwt"},
+            )
+        mock_db.assert_not_called()
+
+    def test_subject_token_and_the_same_db_kwarg(self, mock_db, mock_conn, mock_cls):
+        hardcharger.connect(
+            uri="hardcharger://h",
+            subject_token="eyJ.idp.jwt",
+            db_kwargs={"adbc.warp.auth.subject_token": "eyJ.idp.jwt"},
+        )
+        assert _db_kwargs(mock_db=mock_db)["adbc.warp.auth.subject_token"] == "eyJ.idp.jwt"
+
+    def test_tls_server_name(self, mock_db, mock_conn, mock_cls):
+        hardcharger.connect(
+            uri="hardcharger://10.0.0.7",
+            username="u",
+            password="p",
+            tls_server_name="hc-1.gizmodata.test",
+        )
+        assert _db_kwargs(mock_db=mock_db) == {
+            "uri": "hardcharger://10.0.0.7",
+            "username": "u",
+            "password": "p",
+            "adbc.warp.tls.server_name": "hc-1.gizmodata.test",
+        }
+
+    def test_tls_server_name_conflicts(self, mock_db, mock_conn, mock_cls):
+        with pytest.raises(expected_exception=ValueError, match="disagree: give one of them"):
+            hardcharger.connect(
+                uri="hardcharger://10.0.0.7",
+                tls_server_name="hc-1.gizmodata.test",
+                db_kwargs={"adbc.warp.tls.server_name": "hc-2.gizmodata.test"},
+            )
+        for kwargs in ({"subject_token": ""}, {"tls_server_name": ""}):
+            with pytest.raises(expected_exception=ValueError, match="can't be empty"):
+                hardcharger.connect(uri="hardcharger://h", **kwargs)
+        mock_db.assert_not_called()
+
 
 def test_value_helpers():
     assert hardcharger._tag_text(tag={"b": 2, "a": "x"}) == '{"a":"x","b":2}'
@@ -224,6 +297,27 @@ class TestLibrary:
                 **{"adbc.hardcharger.auth_type": "mtls"},
             )
         assert "needs a client certificate: set adbc.warp.tls.client_cert" in str(error.value)
+
+    def test_subject_token_reaches_the_warp_sql_driver(self):
+        # Its checks see it: a token exchange beside a client certificate sign-in is refused.
+        with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+            adbc_driver_manager.AdbcDatabase(
+                driver=_driver_path(),
+                uri="hardcharger://127.0.0.1",
+                **{
+                    "adbc.hardcharger.auth_type": "client_certificate",
+                    "adbc.warp.auth.subject_token": "eyJ.idp.jwt",
+                },
+            )
+        assert "do not also set adbc.warp.auth.subject_token" in str(error.value)
+
+    def test_tls_server_name_reaches_the_warp_sql_driver(self):
+        with adbc_driver_manager.AdbcDatabase(
+            driver=_driver_path(),
+            uri="hardcharger://10.0.0.7",
+            **{"adbc.warp.tls.server_name": "hc-1.gizmodata.test"},
+        ) as db:
+            assert db.get_option(key="adbc.warp.tls.server_name") == "hc-1.gizmodata.test"
 
     def test_plus_http_is_refused(self):
         with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:

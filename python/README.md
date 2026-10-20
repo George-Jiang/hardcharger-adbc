@@ -24,7 +24,8 @@ with hardcharger.connect(uri="hardcharger://localhost?tls=false", username="hard
 
 `hardcharger://host[:port]` is HTTPS; `?tls=false` is plain HTTP for development. See the
 [repository README](https://github.com/gizmodata/hardcharger-adbc#readme) for tags, settings,
-browser sign-in, client certificate sign-in (`auth_type="client_certificate"`), the driver
-manifest, and the C/C++ and Go examples.
+browser sign-in, client certificate sign-in (`auth_type="client_certificate"`), token exchange
+with your identity provider's tokens (`subject_token=`), the TLS server name
+(`tls_server_name=`), the driver manifest, and the C/C++ and Go examples.
 
 Apache License 2.0. Built by [GizmoData](https://gizmodata.com).

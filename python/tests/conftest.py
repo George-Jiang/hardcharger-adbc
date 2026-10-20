@@ -182,8 +182,13 @@ def conn(hc_server):
         yield connection
 
 
-def make_certificates(out_dir: Path, clients: dict[str, str] | None = None) -> dict[str, Path]:
-    """A throwaway CA, and a server certificate for 127.0.0.1/localhost it signed.
+def make_certificates(
+    out_dir: Path,
+    clients: dict[str, str] | None = None,
+    server_dns_names: list[str] | None = None,
+) -> dict[str, Path]:
+    """A throwaway CA, and a server certificate for 127.0.0.1/localhost it signed (or, with
+    ``server_dns_names``, for those DNS names alone: no IP address).
 
     ``clients`` maps a name to an e-mail address: for each, a client certificate whose identity
     is that e-mail SAN, at ``paths[name]`` with its key at ``paths[name + "-key"]``.
@@ -235,7 +240,7 @@ def make_certificates(out_dir: Path, clients: dict[str, str] | None = None) -> d
     server_key = ec.generate_private_key(curve=ec.SECP256R1())
     server_cert = (
         x509.CertificateBuilder()
-        .subject_name(name=name(common_name="localhost"))
+        .subject_name(name=name(common_name=(server_dns_names or ["localhost"])[0]))
         .issuer_name(name=ca_cert.subject)
         .public_key(key=server_key.public_key())
         .serial_number(number=x509.random_serial_number())
@@ -243,10 +248,14 @@ def make_certificates(out_dir: Path, clients: dict[str, str] | None = None) -> d
         .not_valid_after(time=now + datetime.timedelta(days=1))
         .add_extension(
             extval=x509.SubjectAlternativeName(
-                general_names=[
-                    x509.DNSName(value="localhost"),
-                    x509.IPAddress(value=ipaddress.ip_address(address="127.0.0.1")),
-                ]
+                general_names=(
+                    [x509.DNSName(value=dns_name) for dns_name in server_dns_names]
+                    if server_dns_names
+                    else [
+                        x509.DNSName(value="localhost"),
+                        x509.IPAddress(value=ipaddress.ip_address(address="127.0.0.1")),
+                    ]
+                )
             ),
             critical=False,
         )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import subprocess
@@ -150,6 +151,206 @@ def test_tls_refuses_an_untrusted_certificate(tls_server):
     with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
         hardcharger.connect(uri=tls_server.uri, username=USERNAME, password=tls_server.password)
     assert "certificate" in str(error.value)
+
+
+# --- TLS server name (SNI) ----------------------------------------------------------------
+
+SERVER_NAME = "hc-1.gizmodata.test"
+
+
+class SNIRecorder:
+    """sni_recorder.py in front of a TLS server whose certificate names SERVER_NAME alone (no
+    IP address): the TLS server name each connection's ClientHello carried, read off the
+    wire."""
+
+    def __init__(self, server, process: subprocess.Popen, port: int, log: pathlib.Path):
+        self.server = server
+        self.process = process
+        self.uri = f"hardcharger://127.0.0.1:{port}"
+        self.log = log
+
+    def take(self) -> list:
+        """The server names recorded since the last call (None: no SNI)."""
+        records = [json.loads(s=line) for line in self.log.read_text().splitlines()]
+        self.log.write_text(data="")
+        assert all("error" not in record for record in records), records
+        return [record["server_name"] for record in records]
+
+
+@pytest.fixture(scope="module")
+def sni_recorder(tmp_path_factory):
+    workdir = tmp_path_factory.mktemp("sni")
+    certs = make_certificates(out_dir=workdir, server_dns_names=[SERVER_NAME])
+    server = start_server(
+        workdir=workdir,
+        extra_args=["--tls-cert", str(certs["cert"]), "--tls-key", str(certs["key"])],
+    )
+    server.certs = certs
+    log = workdir / "sni.jsonl"
+    log.write_text(data="")
+    process = subprocess.Popen(
+        args=[
+            sys.executable,
+            str(pathlib.Path(__file__).with_name("sni_recorder.py")),
+            str(server.port),
+            str(log),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    port = int(process.stdout.readline())
+    yield SNIRecorder(server=server, process=process, port=port, log=log)
+    process.kill()
+    process.wait()
+    stop_server(server=server)
+
+
+def _named_connect(recorder: SNIRecorder, **kwargs):
+    return hardcharger.connect(
+        uri=recorder.uri,
+        username=USERNAME,
+        password=recorder.server.password,
+        tls_root_certs=recorder.server.certs["ca"],
+        **kwargs,
+    )
+
+
+def test_tls_server_name_is_the_sni_and_the_verified_name(sni_recorder):
+    # Connected by IP address: the name goes into every ClientHello (result partitions'
+    # connections too) and the certificate, issued to the name alone, is accepted.
+    sni_recorder.take()
+    with _named_connect(recorder=sni_recorder, tls_server_name=SERVER_NAME) as conn:
+        assert conn.current_user() == USERNAME
+        with conn.cursor() as cur:
+            cur.execute(operation="SELECT i FROM range(2000000) t(i) ORDER BY i")
+            assert cur.fetch_arrow_table().num_rows == 2000000
+    names = sni_recorder.take()
+    # More than one: the split result's partitions came over connections of their own.
+    assert len(names) > 1 and set(names) == {SERVER_NAME}, names
+
+
+def test_without_tls_server_name_an_ip_sends_no_sni_and_fails_verification(sni_recorder):
+    sni_recorder.take()
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+        _named_connect(recorder=sni_recorder)
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.IO
+    assert "cannot validate certificate for 127.0.0.1 because it doesn't contain any IP SANs" in (
+        str(error.value)
+    )
+    names = sni_recorder.take()
+    assert names and set(names) == {None}, names  # an IP literal is never an SNI name
+
+
+def test_a_tls_server_name_the_certificate_lacks_fails_verification(sni_recorder):
+    sni_recorder.take()
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+        _named_connect(recorder=sni_recorder, tls_server_name="other.gizmodata.test")
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.IO
+    assert f"certificate is valid for {SERVER_NAME}, not other.gizmodata.test" in str(error.value)
+    names = sni_recorder.take()
+    assert names and set(names) == {"other.gizmodata.test"}, names
+
+
+# --- token exchange (subject_token) --------------------------------------------------------
+
+EXCHANGE_ISSUER = "https://idp.gizmodata.test"
+EXCHANGE_AUDIENCE = "hardcharger-adbc-exchange"
+
+
+@pytest.fixture(scope="module")
+def exchange_server(tmp_path_factory):
+    """A server that signs in holders of RS256 tokens from EXCHANGE_ISSUER, checked with the
+    issuer's public key (``--token-signature-verify-cert-path``)."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    workdir = tmp_path_factory.mktemp("exchange")
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public = workdir / "idp-public.pem"
+    public.write_bytes(
+        data=key.public_key().public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    )
+    exchange_args = [
+        "--token-signature-verify-cert-path",
+        str(public),
+        "--token-allowed-issuer",
+        EXCHANGE_ISSUER,
+        "--token-allowed-audience",
+        EXCHANGE_AUDIENCE,
+        "--token-default-role",
+        "admin",
+        "--token-authorized-emails",
+        "*@gizmodata.com",
+    ]
+    server = start_server(workdir=workdir, extra_args=exchange_args)
+    server.idp_key = key
+    server.exchange_args = exchange_args
+    yield server
+    stop_server(server=server)
+
+
+def _idp_token(server, email: str, issuer: str = EXCHANGE_ISSUER) -> str:
+    import datetime
+
+    import jwt
+
+    now = datetime.datetime.now(tz=datetime.timezone.utc)
+    return jwt.encode(
+        payload={
+            "iss": issuer,
+            "aud": EXCHANGE_AUDIENCE,
+            "sub": email,
+            "email": email,
+            "iat": now,
+            "exp": now + datetime.timedelta(minutes=5),
+        },
+        key=server.idp_key,
+        algorithm="RS256",
+    )
+
+
+def test_subject_token_signs_in_by_token_exchange(exchange_server):
+    token = _idp_token(server=exchange_server, email="analyst@gizmodata.com")
+    with hardcharger.connect(uri=exchange_server.uri, subject_token=token) as conn:
+        assert conn.current_user() == "analyst@gizmodata.com"
+        with conn.cursor() as cur:
+            cur.execute(operation="SELECT auth_method FROM hardcharger_sessions() WHERE is_current")
+            assert cur.fetchone() == ("token",)
+
+
+def test_subject_token_renews_the_access_token(tmp_path, exchange_server):
+    # The driver exchanges the subject token again when Hardcharger's access token runs out.
+    server = start_server(
+        workdir=tmp_path,
+        extra_args=[
+            "--token-lifetime-seconds",
+            "2",
+            *exchange_server.exchange_args,
+        ],
+    )
+    server.idp_key = exchange_server.idp_key
+    try:
+        token = _idp_token(server=server, email="analyst@gizmodata.com")
+        with hardcharger.connect(uri=server.uri, subject_token=token) as conn:
+            for _ in range(2):
+                time.sleep(2.5)
+                assert conn.current_user() == "analyst@gizmodata.com"
+    finally:
+        stop_server(server=server)
+
+
+def test_subject_token_from_another_issuer_is_refused(exchange_server):
+    token = _idp_token(
+        server=exchange_server, email="analyst@gizmodata.com", issuer="https://evil.example"
+    )
+    with pytest.raises(expected_exception=adbc_driver_manager.Error) as error:
+        hardcharger.connect(uri=exchange_server.uri, subject_token=token)
+    assert error.value.status_code == adbc_driver_manager.AdbcStatusCode.UNAUTHENTICATED
+    assert warp_code(error=error.value) == "invalid_credentials"
+    assert "the sign-in token is not accepted" in str(error.value)
 
 
 # --- client certificate sign-in (mutual TLS) -----------------------------------------------
