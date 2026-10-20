@@ -74,7 +74,7 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/cdata"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/arrow/memory/mallocator"
-	hardcharger "github.com/gizmodata/hardcharger-adbc/go/hardcharger"
+	hardcharger "github.com/gizmodata/hardcharger-adbc/go/v2/hardcharger"
 )
 
 // Must use malloc() to respect CGO rules

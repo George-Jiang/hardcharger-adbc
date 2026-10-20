@@ -1,4 +1,4 @@
-module github.com/gizmodata/hardcharger-adbc/go
+module github.com/gizmodata/hardcharger-adbc/go/v2
 
 go 1.27.2
 

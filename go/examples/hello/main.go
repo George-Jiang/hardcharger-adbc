@@ -9,7 +9,7 @@ import (
 	"log"
 
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/gizmodata/hardcharger-adbc/go/hardcharger"
+	"github.com/gizmodata/hardcharger-adbc/go/v2/hardcharger"
 )
 
 func main() {

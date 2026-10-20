@@ -3,7 +3,7 @@
 A release is two tags on one commit of `main`: `vX.Y.Z`, which `release.yml` acts on (the full
 test gate, the shared library for every platform, the wheels, the GitHub Release and PyPI
 `adbc-driver-hardcharger`), and `go/vX.Y.Z`, which versions the Go module
-`github.com/gizmodata/hardcharger-adbc/go` (it lives in `go/`, so Go's subdirectory-module
+`github.com/gizmodata/hardcharger-adbc/go/v2` (v2 requires the `/v2` module/import suffix; it lives in `go/`, so Go's subdirectory-module
 convention applies; `go-module.yml` checks the pair and warms the module proxy). The Python
 package and the Go module share one version line, the server's (2.0.0 with Hardcharger 2.0.0).
 
@@ -39,7 +39,7 @@ released first.
    ```bash
    sha=$(git rev-parse main)
    git tag -a vX.Y.Z -m "hardcharger-adbc X.Y.Z" "$sha"
-   git tag -a go/vX.Y.Z -m "github.com/gizmodata/hardcharger-adbc/go vX.Y.Z" "$sha"
+   git tag -a go/vX.Y.Z -m "github.com/gizmodata/hardcharger-adbc/go/v2 vX.Y.Z" "$sha"
    git push origin vX.Y.Z
    git push origin go/vX.Y.Z
    ```
@@ -52,7 +52,7 @@ released first.
    ```bash
    curl -sS https://pypi.org/pypi/adbc-driver-hardcharger/json | python3 -c 'import json,sys; print(json.load(sys.stdin)["info"]["version"])'
    gh release view vX.Y.Z -R gizmodata/hardcharger-adbc --json assets --jq '.assets[].name'
-   GOFLAGS=-mod=mod GOPROXY=https://proxy.golang.org go list -m github.com/gizmodata/hardcharger-adbc/go@vX.Y.Z
+   GOFLAGS=-mod=mod GOPROXY=https://proxy.golang.org go list -m github.com/gizmodata/hardcharger-adbc/go/v2@vX.Y.Z
    ```
 
 ## While the repositories are internal
