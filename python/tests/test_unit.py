@@ -73,6 +73,11 @@ class TestConnectOptions:
     def test_profile_uri(self, mock_db, mock_conn, mock_cls):
         hardcharger.connect(uri="profile://prod")
         assert _db_kwargs(mock_db=mock_db) == {"profile": "prod"}
+        assert mock_db.call_args.kwargs["driver"] == "hardcharger"
+
+    def test_named_profile(self, mock_db, mock_conn, mock_cls):
+        hardcharger.connect(profile="prod")
+        assert mock_db.call_args.kwargs == {"driver": "hardcharger", "profile": "prod"}
 
     def test_invalid_auth_type(self, mock_db, mock_conn, mock_cls):
         with pytest.raises(expected_exception=ValueError, match="invalid auth_type 'oauth'"):

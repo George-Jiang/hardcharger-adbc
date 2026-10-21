@@ -267,7 +267,9 @@ def connect(
         uri: ``hardcharger://host[:port][?tls=false]``: HTTPS unless ``?tls=false``, port 31337
             unless given. ``warp://``, ``https://`` and ``http://`` URIs work too, as does
             ``profile://<name>``.
-        profile: Name (or absolute path) of an ADBC connection profile.
+        profile: Name (or absolute path) of an ADBC connection profile. Install the
+            driver manifest first (``python -m adbc_driver_hardcharger.manifest``); profiles
+            resolve ``driver = "hardcharger"`` through the ADBC driver manager.
         username: User name for password sign-in.
         password: Password for password sign-in.
         access_token: A Hardcharger access token obtained elsewhere.
@@ -423,7 +425,12 @@ def connect(
     db = None
     conn = None
     try:
-        db = adbc_driver_manager.AdbcDatabase(driver=_driver_path(), **db_kwargs)
+        # A standard profile names the driver as "hardcharger". The manager checks that
+        # this agrees with the requested driver, so a bundled absolute library path
+        # would conflict. Use the installed manifest for profile connections; direct
+        # URI connections keep loading the bundled library without a manifest.
+        driver = "hardcharger" if db_kwargs.get("profile") else _driver_path()
+        db = adbc_driver_manager.AdbcDatabase(driver=driver, **db_kwargs)
         conn = adbc_driver_manager.AdbcConnection(database=db, **conn_kwargs)
         return Connection(db=db, conn=conn, autocommit=autocommit)
     except Exception:

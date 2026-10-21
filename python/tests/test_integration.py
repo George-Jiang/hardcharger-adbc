@@ -906,6 +906,40 @@ def test_manifest_loads_the_driver_by_name_with_a_hardcharger_uri(hc_server, tmp
         )
 
 
+@pytest.mark.parametrize("form", ["name", "uri", "path", "manager"])
+def test_standard_connection_profile(hc_server, tmp_path, monkeypatch, form):
+    """A shared profile names the driver, not the Python wheel's absolute library path."""
+    drivers = tmp_path / "drivers"
+    profiles = tmp_path / "profiles"
+    profiles.mkdir()
+    manifest.install(directory=drivers)
+    monkeypatch.setenv("ADBC_DRIVER_PATH", str(drivers))
+    monkeypatch.setenv("ADBC_PROFILE_PATH", str(profiles))
+    monkeypatch.setenv("HC_PROFILE_PASSWORD", hc_server.password)
+    profile = profiles / "hardcharger_test.toml"
+    profile.write_text(
+        'profile_version = 1\ndriver = "hardcharger"\n\n[Options]\n'
+        f'uri = "hardcharger://127.0.0.1:{hc_server.port}?tls=false"\n'
+        f'username = "{USERNAME}"\n'
+        'password = "{{ env_var(HC_PROFILE_PASSWORD) }}"\n',
+        encoding="utf-8",
+    )
+    if form == "manager":
+        connection = adbc_driver_manager.dbapi.connect(profile="hardcharger_test")
+    elif form == "uri":
+        connection = hardcharger.connect(uri="profile://hardcharger_test")
+    elif form == "path":
+        connection = hardcharger.connect(profile=str(profile))
+    else:
+        # Explicit arguments override the profile's options.
+        monkeypatch.setenv("HC_PROFILE_PASSWORD", "incorrect-profile-password")
+        connection = hardcharger.connect(profile="hardcharger_test", password=hc_server.password)
+    with connection as conn, conn.cursor() as cur:
+        cur.execute("SELECT 42 AS answer")
+        assert cur.fetchone() == (42,)
+        assert conn.adbc_get_info()["driver_name"] == "ADBC Hardcharger Driver - Go"
+
+
 def test_manifest_refuses_a_bad_scheme(hc_server, tmp_path, monkeypatch):
     manifest.install(directory=tmp_path)
     monkeypatch.setenv(name="ADBC_DRIVER_PATH", value=str(tmp_path))

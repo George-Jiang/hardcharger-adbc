@@ -40,6 +40,7 @@ every language at once:
 - 🪪 **client certificate sign-in** (mutual TLS): the certificate is the credential, no password;
 - 🧾 **"ADBC Hardcharger Driver - Go"** as the driver name in GetInfo (the vendor name,
   "Hardcharger", comes from the server);
+- 🗂️ **ADBC connection profiles**, reusable TOML connections with environment-based credentials;
 - 🧩 **a driver manifest**, so `driver = "hardcharger"` finds it in any ADBC driver manager.
 
 > **Status: 2.0.0, released with Hardcharger 2.0.0.** Speaks the Warp SQL protocol 1.0.0, built on
@@ -328,6 +329,67 @@ address as one) and the certificate must list that IP address. It is what GizmoS
 `tls_override_hostname` was. Every connection the driver opens (result partitions, ingest
 parts) sends the same name; `tls_skip_verify=True` still sends it, without checking the
 certificate. Python refuses a different value for the same option in `db_kwargs`.
+
+## 🗂️ ADBC connection profiles
+
+[ADBC connection profiles](https://arrow.apache.org/adbc/current/format/connection_profiles.html)
+store a reusable connection in TOML. The Python wheel requires `adbc-driver-manager >= 1.12.0`.
+The **ADBC driver manager** resolves the profile, expands
+its environment variables and loads the native driver; the Go driver receives the resolved
+options. Install the driver manifest once in each client environment:
+
+```bash
+pip install adbc-driver-hardcharger
+python -m adbc_driver_hardcharger.manifest
+```
+
+Save `hardcharger_prod.toml` in your ADBC profile directory:
+
+- Linux: `~/.config/adbc/profiles/` (or `$XDG_CONFIG_HOME/adbc/profiles/`).
+- macOS: `~/Library/Application Support/ADBC/Profiles/`.
+- Windows: `%LOCALAPPDATA%\ADBC\Profiles\`.
+- Or a directory in `ADBC_PROFILE_PATH` (colon-separated on Unix, semicolon-separated on Windows).
+
+```toml
+profile_version = 1
+driver = "hardcharger"
+
+[Options]
+uri = "hardcharger://db.example.com:31337"
+username = "{{ env_var(HARDCHARGER_USERNAME) }}"
+password = "{{ env_var(HARDCHARGER_PASSWORD) }}"
+```
+
+Set those environment variables, then use the profile from Python:
+
+```python
+from adbc_driver_hardcharger import dbapi as hardcharger
+
+with hardcharger.connect(profile="hardcharger_prod") as conn, conn.cursor() as cur:
+    cur.execute("SELECT 42 AS answer")
+    print(cur.fetch_arrow_table())
+
+# Equivalent forms:
+# hardcharger.connect(uri="profile://hardcharger_prod")
+# hardcharger.connect(profile="/absolute/path/hardcharger_prod.toml")
+```
+
+The same profile works through the generic driver manager, without importing this package:
+
+```python
+from adbc_driver_manager import dbapi
+
+with dbapi.connect(profile="hardcharger_prod") as conn, conn.cursor() as cur:
+    cur.execute("SELECT 42 AS answer")
+    print(cur.fetch_arrow_table())
+```
+
+Explicit Python connection options override the profile's `[Options]`. `hardcharger://` uses
+TLS by default; add `?tls=false` only for local development. For browser SSO, replace the
+`username` and `password` options with `"adbc.hardcharger.auth_type" = "external"` and use a
+server configured for browser sign-in. Other ADBC languages can reuse this profile through a
+driver manager with connection-profile support; direct Go driver calls do not resolve TOML
+profiles themselves.
 
 ## 🧩 Driver manifest
 

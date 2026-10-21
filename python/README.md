@@ -29,3 +29,12 @@ with your identity provider's tokens (`subject_token=`), the TLS server name
 (`tls_server_name=`), the driver manifest, and the C/C++ and Go examples.
 
 Apache License 2.0. Built by [GizmoData](https://gizmodata.com).
+
+## Connection profiles
+
+Install the manifest with `python -m adbc_driver_hardcharger.manifest`, then reuse a standard
+ADBC TOML profile (`driver = "hardcharger"`) with `hardcharger.connect(profile="prod")`,
+`hardcharger.connect(uri="profile://prod")`, or an absolute profile path. The generic
+`adbc_driver_manager.dbapi.connect(profile="prod")` uses the same file. See the
+[profile setup and complete examples](https://github.com/gizmodata/hardcharger-adbc#-adbc-connection-profiles)
+for search paths, environment-variable credentials, browser SSO and option overrides.

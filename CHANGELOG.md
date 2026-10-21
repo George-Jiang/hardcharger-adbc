@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Python connections using a standard ADBC profile with `driver = "hardcharger"` resolve the
+  installed driver manifest, avoiding a mismatch with the bundled library path. Named profiles,
+  `profile://` URIs and absolute paths are documented alongside generic driver-manager usage.
+
 ## [2.0.0] - 2026-10-20
 
 The first release, with Hardcharger 2.0.0: the ADBC driver for Hardcharger, speaking Warp SQL
