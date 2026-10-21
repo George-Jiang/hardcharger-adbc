@@ -44,13 +44,22 @@ class DatabaseOptions(enum.Enum):
     #: Host name the server certificate is checked against, instead of the URI's.
     TLS_SERVER_NAME = "adbc.warp.tls.server_name"
     #: A Warp SQL access token obtained elsewhere (used as is, never renewed by the driver).
+    #: Readable too: the token in use (a bearer secret; see ``Connection.access_token``).
     ACCESS_TOKEN = "adbc.warp.auth.access_token"
+    #: Read-only: when the token in use expires, RFC 3339 UTC ("" when unknown).
+    ACCESS_TOKEN_EXPIRES_AT = "adbc.warp.auth.access_token_expires_at"
     #: An identity provider's token, exchanged for an access token.
     SUBJECT_TOKEN = "adbc.warp.auth.subject_token"
     #: How often a request that is safe to repeat is sent, first try included.
     RETRY_MAX_ATTEMPTS = "adbc.warp.retry.max_attempts"
     #: Replace a session the server lost with a new one ("true", the default).
     SESSION_RECONNECT = "adbc.warp.session.reconnect"
+    #: Attach every connection to this existing session instead of creating one (it must be
+    #: the signed-in user's): its open transaction, temporary tables and settings carry on.
+    SESSION_ID = "adbc.warp.session.id"
+    #: "true"/"false": whether closing a connection ends its session on the server. Default:
+    #: "true" for a session the connection created, "false" for one it attached to.
+    SESSION_CLOSE_ON_RELEASE = "adbc.warp.session.close_on_release"
 
 
 class ConnectionOptions(enum.Enum):
@@ -67,8 +76,17 @@ class ConnectionOptions(enum.Enum):
     #: The most connections one bulk ingest is sent over at once (``adbc.warp.ingest.parts``).
     INGEST_PARTS = "adbc.hardcharger.ingest.parts"
 
-    #: The connection's current server session id.
+    #: The connection's current server session id (read-only; to attach to a session, use
+    #: the database option).
     SESSION_ID = "adbc.warp.session.id"
+    #: "true"/"false": whether closing this connection ends its session on the server (read
+    #: and write).
+    SESSION_CLOSE_ON_RELEASE = "adbc.warp.session.close_on_release"
+    #: The access token the connection sends (read-only here): renewed first when due, so it
+    #: is the current one. A bearer secret: store it encrypted, never log it.
+    ACCESS_TOKEN = "adbc.warp.auth.access_token"
+    #: When that token expires, RFC 3339 UTC ("" when unknown; read-only).
+    ACCESS_TOKEN_EXPIRES_AT = "adbc.warp.auth.access_token_expires_at"
     #: How often the connection's session was lost and replaced.
     SESSION_REPLACEMENTS = "adbc.warp.session.replacements"
     #: The session's transaction as the server reports it (read-only): "none", "open",
