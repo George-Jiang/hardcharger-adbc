@@ -1127,7 +1127,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-github.com/gizmodata/warp-sql-adbc/go v0.0.0-20261020173443-c4bf34cf3ad5
+github.com/gizmodata/warp-sql-adbc/go v1.0.0
 ================================================================================
 
 
@@ -1319,7 +1319,7 @@ github.com/gizmodata/warp-sql-adbc/go v0.0.0-20261020173443-c4bf34cf3ad5
       same "printed page" as the copyright notice for easier
       identification within third-party archives.
 
-   Copyright [yyyy] [name of copyright owner]
+   Copyright 2026 GizmoData LLC
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.

@@ -490,8 +490,8 @@ packaging/           the driver manifest template
 ## 🛠️ Building and testing
 
 Go 1.27 with cgo (and, on Linux, `zig` for the glibc 2.17 build), Python 3.11+. The Warp SQL
-driver is the Go module `github.com/gizmodata/warp-sql-adbc/go`, pinned in `go/go.mod`; while
-that repository is private, build with `GOPRIVATE=github.com/gizmodata/*` and git access to it.
+driver is the Go module `github.com/gizmodata/warp-sql-adbc/go`, pinned to its released v1.0.0
+in `go/go.mod`.
 
 ```bash
 scripts/build_lib.sh                       # go/build/libadbc_driver_hardcharger.{so,dylib,dll}
