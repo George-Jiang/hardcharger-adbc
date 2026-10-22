@@ -5132,7 +5132,7 @@ THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ================================================================================
-google.golang.org/genproto/googleapis/api v0.0.0-20261012220534-4341edf3f941
+google.golang.org/genproto/googleapis/api v0.0.0-20261019180522-ce908d29299b
 ================================================================================
 
 
@@ -5339,7 +5339,7 @@ google.golang.org/genproto/googleapis/api v0.0.0-20261012220534-4341edf3f941
    limitations under the License.
 
 ================================================================================
-google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941
+google.golang.org/genproto/googleapis/rpc v0.0.0-20261019180522-ce908d29299b
 ================================================================================
 
 

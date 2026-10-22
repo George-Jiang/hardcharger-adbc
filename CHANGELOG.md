@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-10-22
+
+### Added
+
+- A total PyPI downloads badge matching the GizmoSQL ADBC driver and a documentation badge
+  linking to the Python client guide, in both the repository README and PyPI description.
+- A Documentation project link in the PyPI package metadata.
+
+### Changed
+
+- The PyPI description now mirrors the full repository README, with absolute image and file
+  URLs that work on both sites. `scripts/sync_python_readme.sh` updates the package copy;
+  CI checks that the two remain identical before publishing.
+- Update the build requirements to setuptools 84.2.1 and wheel 0.48.0, and the Go protobuf
+  API/RPC modules to their October 19, 2026 revisions. Python runtime dependencies are current.
+
 ## [2.0.0] - 2026-10-20
 
 The first release, with Hardcharger 2.0.0: the ADBC driver for Hardcharger, speaking Warp SQL

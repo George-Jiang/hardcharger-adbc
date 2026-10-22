@@ -51,6 +51,8 @@ jobs:
         python: ["3.11", "3.14"]
     steps:
       - uses: actions/checkout@v7
+      - name: PyPI description mirrors the repository README
+        run: scripts/sync_python_readme.sh --check
       - uses: ./.github/actions/go-private
         with:
           deploy-key: ${{ secrets.WARP_SQL_ADBC_DEPLOY_KEY }}

@@ -31,6 +31,9 @@ one commit with `git commit --amend -s`, or a series with `git rebase --signoff 
   the README (or `docs/`) describes before pushing; CI runs the same checks on every pull request.
 - Add a line to the `[Unreleased]` section of [CHANGELOG.md](CHANGELOG.md)
   (Keep a Changelog format: Added / Changed / Fixed).
+- After editing `README.md`, run `scripts/sync_python_readme.sh` to update the PyPI
+  description in `python/README.md`; CI checks that they match. Use absolute URLs for
+  repository files and images so they also work on PyPI.
 - Python code uses keyword arguments at call sites (`f(table_name=name, mode="create")`).
 - Never include credentials, customer data or internal host names in code, tests, fixtures or
   commit messages.

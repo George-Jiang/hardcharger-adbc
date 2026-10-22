@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=84.0.0", "wheel"]
+requires = ["setuptools>=84.2.1", "wheel>=0.48.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -33,6 +33,7 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/gizmodata/hardcharger-adbc"
+Documentation = "https://docs.hardcharger.gizmodata.com/clients/python/"
 Repository = "https://github.com/gizmodata/hardcharger-adbc"
 Changelog = "https://github.com/gizmodata/hardcharger-adbc/blob/main/CHANGELOG.md"
 

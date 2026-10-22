@@ -1,20 +1,22 @@
 <p align="center">
   <a href="https://github.com/gizmodata/hardcharger">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hardcharger-banner-dark.png">
-      <img src="docs/assets/hardcharger-banner-light.png" alt="Hardcharger™" width="400">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/gizmodata/hardcharger-adbc/main/docs/assets/hardcharger-banner-dark.png">
+      <img src="https://raw.githubusercontent.com/gizmodata/hardcharger-adbc/main/docs/assets/hardcharger-banner-light.png" alt="Hardcharger™" width="400">
     </picture>
   </a>
 </p>
 
 <p align="center">
+  <a href="https://docs.hardcharger.gizmodata.com/clients/python/"><img src="https://img.shields.io/badge/docs-Hardcharger-2563eb.svg" alt="Hardcharger Python client documentation"></a>
   <a href="https://pypi.org/project/adbc-driver-hardcharger/"><img src="https://img.shields.io/badge/PyPI-adbc--driver--hardcharger-blue.svg?logo=PyPI" alt="PyPI"></a>
+  <a href="https://pypi.org/project/adbc-driver-hardcharger/"><img src="https://img.shields.io/pepy/dt/adbc-driver-hardcharger.svg" alt="PyPI Downloads"></a>
   <a href="https://arrow.apache.org/adbc/"><img src="https://img.shields.io/badge/ADBC-1.12-f15a24.svg" alt="ADBC 1.12"></a>
   <a href="https://github.com/gizmodata/warp-sql"><img src="https://img.shields.io/badge/protocol-Warp%20SQL-31a8db.svg" alt="Warp SQL protocol"></a>
   <img src="https://img.shields.io/badge/core-Go-00ADD8.svg?logo=go&logoColor=white" alt="Go core">
   <img src="https://img.shields.io/badge/bindings-Python-3776AB.svg?logo=python&logoColor=white" alt="Python bindings">
   <a href="https://github.com/gizmodata/hardcharger"><img src="https://img.shields.io/badge/server-Hardcharger-f15a24.svg" alt="Hardcharger"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg" alt="Apache 2.0 license"></a>
+  <a href="https://github.com/gizmodata/hardcharger-adbc/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg" alt="Apache 2.0 license"></a>
   <a href="https://gizmodata.com"><img src="https://img.shields.io/badge/by-GizmoData%E2%84%A2-f15a24.svg" alt="GizmoData™"></a>
 </p>
 
@@ -43,7 +45,7 @@ every language at once:
 - 🗂️ **ADBC connection profiles**, reusable TOML connections with environment-based credentials;
 - 🧩 **a driver manifest**, so `driver = "hardcharger"` finds it in any ADBC driver manager.
 
-> **Status: 2.0.0, released with Hardcharger 2.0.0.** Speaks the Warp SQL protocol 1.0.0, built on
+> **Status: 2.0.1, compatible with Hardcharger 2.0.0.** Speaks the Warp SQL protocol 1.0.0, built on
 > [warp-sql-adbc](https://github.com/gizmodata/warp-sql-adbc) 1.0.0; tested against
 > `hardcharger-server` 2.0.0.
 
@@ -93,7 +95,7 @@ AdbcDatabaseSetOption(&database, "adbc.hardcharger.query_tag", "{\"app\": \"hell
 AdbcDatabaseInit(&database, &error);
 ```
 
-[examples/c/hello.c](examples/c/hello.c) is the whole program (it prints `answer = 42`):
+[examples/c/hello.c](https://github.com/gizmodata/hardcharger-adbc/blob/main/examples/c/hello.c) is the whole program (it prints `answer = 42`):
 
 ```bash
 cc examples/c/hello.c -I"$ADBC/include" -L"$ADBC/lib" -ladbc_driver_manager -o hello && ./hello
@@ -114,7 +116,7 @@ db, err := hardcharger.NewDriver(memory.DefaultAllocator).NewDatabaseWithContext
 cnxn, err := db.Open(ctx)
 ```
 
-[go/examples/hello](go/examples/hello/main.go) is the whole program (`go run ./examples/hello`
+[go/examples/hello](https://github.com/gizmodata/hardcharger-adbc/blob/main/go/examples/hello/main.go) is the whole program (`go run ./examples/hello`
 in `go/`). The package is `github.com/gizmodata/hardcharger-adbc/go/v2/hardcharger`.
 
 ## 🔗 URIs
@@ -470,7 +472,7 @@ python -m adbc_driver_hardcharger.manifest          # for this user, pointing at
 python -m adbc_driver_hardcharger.manifest --print  # or print it
 ```
 
-Without Python, fill in [packaging/hardcharger.toml.in](packaging/hardcharger.toml.in) with the
+Without Python, fill in [packaging/hardcharger.toml.in](https://github.com/gizmodata/hardcharger-adbc/blob/main/packaging/hardcharger.toml.in) with the
 directory of the library from a [release](https://github.com/gizmodata/hardcharger-adbc/releases)
 tarball, and install it as `hardcharger.toml` in `~/.config/adbc/drivers/` (Linux),
 `~/Library/Application Support/ADBC/Drivers/` (macOS), `%LOCALAPPDATA%\ADBC\Drivers\`
@@ -515,7 +517,7 @@ the `ghcr.io/gizmodata/hardcharger:main` image (Hardcharger's main branch), pull
 
 ## 📦 Releasing
 
-Releases follow [semantic versioning](https://semver.org) and [CHANGELOG.md](CHANGELOG.md).
+Releases follow [semantic versioning](https://semver.org) and [CHANGELOG.md](https://github.com/gizmodata/hardcharger-adbc/blob/main/CHANGELOG.md).
 Pushing a `vX.Y.Z` tag runs every suite on the tagged commit, then builds the library for Linux
 amd64/arm64 (glibc 2.17; installed and loaded on Oracle Linux 8), macOS arm64/amd64 and Windows
 amd64/arm64, wheels for all of them but Windows arm64 (pyarrow and adbc-driver-manager publish
@@ -527,15 +529,15 @@ dated section, and regenerate `THIRD_PARTY_NOTICES` if a Go dependency moved
 
 ## 📄 License
 
-Apache License 2.0; see [LICENSE](LICENSE). The shared library links the Go runtime and the Go
+Apache License 2.0; see [LICENSE](https://github.com/gizmodata/hardcharger-adbc/blob/main/LICENSE). The shared library links the Go runtime and the Go
 modules listed, with their licenses, in
-[THIRD_PARTY_NOTICES](python/src/adbc_driver_hardcharger/THIRD_PARTY_NOTICES), which ships in
+[THIRD_PARTY_NOTICES](https://github.com/gizmodata/hardcharger-adbc/blob/main/python/src/adbc_driver_hardcharger/THIRD_PARTY_NOTICES), which ships in
 every wheel and library tarball.
 
 ---
 
 <p align="center">
-  <a href="https://gizmodata.com"><img src="docs/assets/gizmodata-logo.png" alt="GizmoData™" width="56"></a><br>
+  <a href="https://gizmodata.com"><img src="https://raw.githubusercontent.com/gizmodata/hardcharger-adbc/main/docs/assets/gizmodata-logo.png" alt="GizmoData™" width="56"></a><br>
   <sub>Built by <a href="https://gizmodata.com">GizmoData™</a></sub>
 </p>
 
