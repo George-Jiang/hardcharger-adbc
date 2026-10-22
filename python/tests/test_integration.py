@@ -59,6 +59,42 @@ def test_the_server_reports_itself_as_hardcharger(conn):
     assert info["driver_name"] == "ADBC Hardcharger Driver - Go"
 
 
+def test_duckdb_settings_preserves_variant_storage_and_metadata(conn):
+    # DuckDB 2.0 adds typed_value VARIANT. The C Data bridge used to export
+    # its struct schema with zero array children, failing on the first batch.
+    with conn.cursor() as cur:
+        cur.execute(operation="SELECT * FROM duckdb_settings()")
+        table = cur.fetch_arrow_table()
+    assert table.num_rows > 100
+    field = table.schema.field("typed_value")
+    assert field.metadata[b"ARROW:extension:name"] == b"arrow.parquet.variant"
+    assert [child.name for child in field.type] == ["metadata", "value"]
+    rows = table.to_pylist()
+    assert any(row["name"] == "access_mode" for row in rows)
+    assert any(isinstance(row["typed_value"]["value"], bytes) for row in rows)
+
+
+@pytest.mark.parametrize(
+    "expression",
+    ["42::VARIANT", "{'v': 42::VARIANT}", "[42::VARIANT, NULL::VARIANT]"],
+)
+def test_variant_results_round_trip_through_c_data(conn, expression):
+    with conn.cursor() as cur:
+        cur.execute(operation=f"SELECT {expression} AS v FROM range(7)")
+        table = cur.fetch_record_batch().read_all()
+    assert table.num_rows == 7
+    # Reading the storage values exercises every child, including nested arrays.
+    values = table.column("v").to_pylist()
+    assert values[0] == values[-1]
+    value = values[0]
+    if isinstance(value, list):
+        assert value[1] is None
+        value = value[0]
+    elif "v" in value:
+        value = value["v"]
+    assert value == {"metadata": b"\x01\x00\x00", "value": b"\x14\x2a\x00\x00\x00"}
+
+
 def test_connection_helpers(conn):
     assert isinstance(conn, hardcharger.Connection)
     assert conn.current_user() == USERNAME

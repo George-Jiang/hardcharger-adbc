@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-10-22
+
+### Fixed
+
+- Export Arrow extension arrays through the C Data interface using their physical storage,
+  preserving the original extension metadata. DuckDB 2.0's `duckdb_settings().typed_value`
+  and other `VARIANT` results now work in Python and other C ADBC consumers, including
+  variants nested in structs, lists and dictionaries. Sliced struct storage keeps the
+  correct offsets and validity. Regression tests exercise live-server results and
+  zero-copy C Data round trips with memory accounting.
+
 ## [2.0.1] - 2026-10-22
 
 ### Added

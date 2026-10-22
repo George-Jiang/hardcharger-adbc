@@ -415,7 +415,7 @@ func HardchargerArrayStreamGetNext(stream *C.struct_ArrowArrayStream, array *C.s
 	}
 	cStream := getFromHandle[cArrayStream](stream.private_data)
 	if cStream.rdr.Next() {
-		cdata.ExportArrowRecordBatch(cStream.rdr.RecordBatch(), toCdataArray(array), nil)
+		exportRecordBatch(cStream.rdr.RecordBatch(), toCdataArray(array))
 		return 0
 	}
 	array.release = nil

@@ -34,6 +34,7 @@ $(LIB): $(shell find hardcharger pkg -name '*.go' -o -name '*.[ch]') go.mod go.s
 # Unit tests: no server needed.
 test:
 	go test -race ./...
+	go test -race -tags driverlib ./pkg/hardcharger
 
 # The live-server suite. HARDCHARGER_ADBC_TEST_SERVER_BINARY must name a
 # hardcharger-server binary; without it the suite fails.
@@ -46,6 +47,7 @@ regenerate:
 	cd "$$(go mod download -json $(FFITEMPLATE) | sed -n 's/.*"Dir": "\(.*\)",/\1/p')" && \
 		GOFLAGS=-mod=mod go run . -prefix Hardcharger -driver $(CURDIR)/hardcharger -in ./_tmpl
 	for f in driver.go utils.c utils.h; do install -m 644 hardcharger/pkg/$$f pkg/hardcharger/$$f; done
+	python3 ../scripts/patch_generated_exports.py
 	rm -rf hardcharger/pkg
 
 clean:
