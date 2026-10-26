@@ -53,6 +53,13 @@ def test_select_through_a_hardcharger_uri(conn):
         assert cur.fetch_arrow_table().to_pylist() == [{"answer": 42, "greeting": "hello"}]
 
 
+def test_fetch_polars_returns_a_dataframe(conn):
+    polars = pytest.importorskip(modname="polars")
+    frame = conn.execute(operation="SELECT 1 AS a, 2 AS b").fetch_polars()
+    assert isinstance(frame, polars.DataFrame)
+    assert frame.to_dicts() == [{"a": 1, "b": 2}]
+
+
 def test_the_server_reports_itself_as_hardcharger(conn):
     info = conn.adbc_get_info()
     assert info["vendor_name"] == "Hardcharger"

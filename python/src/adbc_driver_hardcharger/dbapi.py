@@ -25,6 +25,7 @@ from collections.abc import Mapping
 from typing import Any, Literal, Optional, Union
 
 import adbc_driver_manager
+from adbc_driver_manager._lib import _blocking_call
 from adbc_driver_manager.dbapi import Connection as _BaseConnection
 from adbc_driver_manager.dbapi import Cursor as _BaseCursor
 
@@ -144,6 +145,23 @@ class Cursor(_BaseCursor):
         if self._results is None and self._executed_without_result_set:
             return []
         return super().fetchall()
+
+    def fetch_polars(self):
+        """Fetch all rows of the result as a polars DataFrame."""
+        if self._results is None:
+            return super().fetch_polars()
+        # The driver manager's fetch_polars() calls polars.from_arrow() on the Arrow C
+        # stream, which polars 2 turns into a struct Series; polars.DataFrame() reads the
+        # stream as a DataFrame on every polars version.
+        import polars
+
+        results = self._results
+        return _blocking_call(
+            func=lambda: polars.DataFrame(data=results.fetch_arrow()),
+            args=(),
+            kwargs={},
+            cancel=results._stmt.cancel,
+        )
 
 
 class Connection(_BaseConnection):

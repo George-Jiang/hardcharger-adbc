@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- Python: `fetch_polars()` returns a polars `DataFrame` with polars 2, instead of a
+  single struct `Series` (the driver manager's `polars.from_arrow()` call on the Arrow C
+  stream changed meaning in polars 2).
+
 ## [2.0.2] - 2026-10-22
 
 ### Fixed
